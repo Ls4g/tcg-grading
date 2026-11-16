@@ -3,7 +3,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { adviseOn, ODDS_GRADES, oddsAreUsable, type CostInputs, type GradeOdds, type OddsGrade } from "@/lib/tcgGrading/advice";
-import type { CardResult, CardVersion } from "@/lib/tcgGrading/cards";
+import { customVersion, type CardResult, type CardVersion } from "@/lib/tcgGrading/cards";
 import { PSA_FEES_AS_OF, suggestPsaTier } from "@/lib/tcgGrading/gradingFees";
 import type { Company, Game, ListingVerdict } from "@/lib/tcgGrading/listings";
 import type { PriceResult } from "@/lib/tcgGrading/price";
@@ -60,6 +60,8 @@ export default function GradingTool() {
   const [card, setCard] = useState<CardResult | null>(null);
   const [versionKey, setVersionKey] = useState("");
   const [language, setLanguage] = useState<Language>("english");
+  const [customText, setCustomText] = useState("");
+  const [customOpen, setCustomOpen] = useState(false);
   const [sales, setSales] = useState<PriceResult | null>(null);
   const [pricing, setPricing] = useState(false);
   const [error, setError] = useState("");
@@ -125,6 +127,8 @@ export default function GradingTool() {
     setCard(next);
     setSales(null);
     setError("");
+    setCustomOpen(false);
+    setCustomText("");
     const first = next.versions[0];
     setVersionKey(first?.key ?? "");
     setRawCost(first?.rawMarketUsd != null ? String(first.rawMarketUsd) : "");
@@ -133,7 +137,16 @@ export default function GradingTool() {
   function pickVersion(version: CardVersion) {
     setVersionKey(version.key);
     setSales(null);
+    setCustomOpen(false);
     setRawCost(version.rawMarketUsd != null && language === "english" ? String(version.rawMarketUsd) : "");
+  }
+
+  const typedVersion = card && customOpen ? customVersion(card.id, customText, card.game) : null;
+  function applyTypedVersion() {
+    if (!typedVersion) return;
+    setVersionKey(typedVersion.key);
+    setSales(null);
+    setRawCost("");
   }
 
   async function getPrices() {
@@ -155,7 +168,7 @@ export default function GradingTool() {
     }
   }
 
-  const selectedVersion = card?.versions.find((v) => v.key === versionKey) ?? null;
+  const selectedVersion = card?.versions.find((v) => v.key === versionKey) ?? (typedVersion?.key === versionKey ? typedVersion : null);
   const inBatch = batch.some((item) => item.versionKey === versionKey && item.language === language);
 
   function addToBatch() {
@@ -323,7 +336,23 @@ export default function GradingTool() {
                   {version.label}{version.rawMarketUsd != null ? ` · ${money(version.rawMarketUsd)} raw` : ""}
                 </button>
               ))}
+              <button type="button" className={chip(customOpen)} onClick={() => setCustomOpen((open) => !open)}>Other version…</button>
             </div>
+            {customOpen && (
+              <div className="mt-2 rounded-lg border border-[var(--line)] p-3 text-sm">
+                <label className="block font-semibold">Type the version as sellers write it</label>
+                <div className="mt-1 flex gap-2">
+                  <input className={input} value={customText} placeholder="e.g. Magazine Promo" maxLength={40}
+                    onChange={(e) => { setCustomText(e.target.value); setSales(null); }}
+                    onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); applyTypedVersion(); } }} />
+                  <button type="button" className={quiet} disabled={!typedVersion} onClick={applyTypedVersion}>Use</button>
+                </div>
+                <p className="mt-1 text-xs text-[var(--muted)]">
+                  For versions the card list doesn&apos;t have, like a Japanese magazine promo. Only graded sales whose title has every word you type are counted
+                  {typedVersion?.key === versionKey ? `. Using: "${typedVersion.label}"` : ""}. No raw price is known for a typed version, so enter yours.
+                </p>
+              </div>
+            )}
 
             {card.game === "onepiece" && (
               <>

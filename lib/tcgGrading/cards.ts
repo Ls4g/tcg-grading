@@ -16,7 +16,31 @@ export type CardVersion = {
   /** TCGplayer market price for a raw copy, USD. Null when not listed. */
   rawMarketUsd: number | null;
   variantTags: string[];
+  /** Words a listing must contain (user-typed "other version"). */
+  mustMention?: string[];
 };
+
+export const CUSTOM_VERSION_PREFIX = "custom:";
+const CUSTOM_MAX = 40;
+
+/** "Magazine Promo" -> ["magazine", "promo"]; words that must appear in a title. */
+export function customVersionWords(text: string): string[] {
+  return [...new Set(text.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((word) => word.length > 1))].slice(0, 6);
+}
+
+/** A version the card source doesn't list (e.g. a Japanese-only magazine promo). */
+export function customVersion(cardId: string, text: string, game: Game): CardVersion | null {
+  const label = text.trim().slice(0, CUSTOM_MAX);
+  const words = customVersionWords(label);
+  if (!words.length) return null;
+  return {
+    key: `${cardId}|${CUSTOM_VERSION_PREFIX}${label}`,
+    label: `${label} (typed)`,
+    rawMarketUsd: null,
+    variantTags: variantTagsIn(game, label),
+    mustMention: words,
+  };
+}
 
 export type CardResult = {
   game: Game;
@@ -157,6 +181,7 @@ async function getPokemonCard(id: string): Promise<CardResult | null> {
 // ---------- One Piece ----------
 
 type OnePieceRow = {
+  endpoint?: OpEndpoint;
   card_name: string;
   card_set_id: string;
   card_image_id: string;
@@ -168,10 +193,18 @@ type OnePieceRow = {
 
 const OP_ID = /^(?:OP|ST|EB|PRB)\d{1,2}-\d{3}$|^P-\d{3}$/i;
 
-function opEndpoint(cardId: string) {
-  if (/^ST/i.test(cardId)) return "decks";
-  if (/^P-/i.test(cardId)) return "promos";
-  return "sets";
+const OP_ENDPOINTS = ["sets", "decks", "promos"] as const;
+type OpEndpoint = (typeof OP_ENDPOINTS)[number];
+
+/** Every list that can hold this ID. A deck card can also be a promo reprint. */
+async function opRowsFor(id: string): Promise<Array<OnePieceRow & { endpoint: OpEndpoint }>> {
+  const lists = await Promise.all(
+    OP_ENDPOINTS.map(async (endpoint) => {
+      const rows = await getJson<OnePieceRow[] | { error?: string }>(`${OPTCG_API}/${endpoint}/card/${id}/`).catch(() => []);
+      return Array.isArray(rows) ? rows.map((row) => ({ ...row, endpoint })) : [];
+    }),
+  );
+  return lists.flat();
 }
 
 /** "Shanks (Parallel) (Manga) (Alternate Art)" -> "Manga Alternate Art" */
@@ -180,23 +213,33 @@ function opVersionLabel(row: OnePieceRow) {
     .map((m) => m[1])
     .filter((bit) => !/^\d{3}$/.test(bit) && !OP_ID.test(bit));
   const label = bits.length ? bits.join(" · ") : "Base";
-  return /premium booster/i.test(row.set_name) ? `${label} (${row.set_name})` : label;
+  if (/premium booster/i.test(row.set_name)) return `${label} (${row.set_name})`;
+  return row.endpoint === "promos" && !/promo/i.test(label) ? `${label} (Promo)` : label;
 }
 
 function opBaseName(name: string) {
   return name.replace(/\s+-\s+.*$/, "").replace(/\(.*?\)/g, "").trim();
 }
 
+/** Promo rows reuse the base image id, so they get their own key space. */
+function opVersionKey(row: OnePieceRow) {
+  return `${row.card_set_id}|${row.endpoint === "promos" ? "promo:" : ""}${row.card_image_id}`;
+}
+
 function groupOnePiece(rows: OnePieceRow[]): CardResult[] {
   const byCard = new Map<string, OnePieceRow[]>();
+  const seen = new Set<string>();
   for (const row of rows) {
     if (!row.card_set_id || !row.card_image_id) continue;
+    const key = opVersionKey(row);
+    if (seen.has(key)) continue;
+    seen.add(key);
     const list = byCard.get(row.card_set_id) ?? [];
     list.push(row);
     byCard.set(row.card_set_id, list);
   }
   return [...byCard.entries()].map(([cardId, list]) => {
-    const original = list.find((row) => row.card_image_id === cardId) ?? list[0];
+    const original = list.find((row) => row.card_image_id === cardId && row.endpoint !== "promos") ?? list[0];
     return {
       game: "onepiece" as const,
       id: cardId,
@@ -206,7 +249,7 @@ function groupOnePiece(rows: OnePieceRow[]): CardResult[] {
       rarity: original.rarity,
       image: original.card_image,
       versions: list.map((row): CardVersion => ({
-        key: `${cardId}|${row.card_image_id}`,
+        key: opVersionKey(row),
         label: opVersionLabel(row),
         rawMarketUsd: row.market_price ?? null,
         // Version tags come from the name *and* the set: a Premium Booster
@@ -220,26 +263,22 @@ function groupOnePiece(rows: OnePieceRow[]): CardResult[] {
 export async function searchOnePiece(input: string): Promise<CardResult[]> {
   const trimmed = input.trim();
   const idMatch = /\b((?:OP|ST|EB|PRB)\d{1,2}-\d{3}|P-\d{3})\b/i.exec(trimmed);
-  if (idMatch) {
-    const id = idMatch[1].toUpperCase();
-    const rows = await getJson<OnePieceRow[]>(`${OPTCG_API}/${opEndpoint(id)}/card/${id}/`).catch(() => []);
-    return groupOnePiece(Array.isArray(rows) ? rows : []);
-  }
+  if (idMatch) return groupOnePiece(await opRowsFor(idMatch[1].toUpperCase()));
   const name = trimmed.replace(/[^\p{L}\p{N}\s.'-]/gu, " ").trim();
   if (name.length < 2) return [];
   const results = await Promise.all(
-    ["sets", "decks", "promos"].map((kind) =>
-      getJson<OnePieceRow[]>(`${OPTCG_API}/${kind}/filtered/?card_name=${encodeURIComponent(name)}`).catch(() => [] as OnePieceRow[]),
-    ),
+    OP_ENDPOINTS.map(async (endpoint) => {
+      const rows = await getJson<OnePieceRow[]>(`${OPTCG_API}/${endpoint}/filtered/?card_name=${encodeURIComponent(name)}`).catch(() => [] as OnePieceRow[]);
+      return Array.isArray(rows) ? rows.map((row) => ({ ...row, endpoint })) : [];
+    }),
   );
-  return groupOnePiece(results.flat().filter(Boolean)).slice(0, 40);
+  return groupOnePiece(results.flat()).slice(0, 40);
 }
 
 async function getOnePieceCard(cardId: string): Promise<CardResult | null> {
   if (!OP_ID.test(cardId)) return null;
   const id = cardId.toUpperCase();
-  const rows = await getJson<OnePieceRow[]>(`${OPTCG_API}/${opEndpoint(id)}/card/${id}/`);
-  return groupOnePiece(Array.isArray(rows) ? rows : []).find((card) => card.id === id) ?? null;
+  return groupOnePiece(await opRowsFor(id)).find((card) => card.id === id) ?? null;
 }
 
 // ---------- Shared ----------
@@ -252,11 +291,16 @@ export type ResolvedVersion = { card: CardResult; version: CardVersion };
 
 /** Re-reads the card from its source, so the client can't steer the search. */
 export async function resolveVersion(game: Game, versionKey: string): Promise<ResolvedVersion | null> {
-  const [cardId] = versionKey.split("|");
+  const separator = versionKey.indexOf("|");
+  const cardId = separator === -1 ? versionKey : versionKey.slice(0, separator);
+  const variant = separator === -1 ? "" : versionKey.slice(separator + 1);
   if (!cardId) return null;
   const card = game === "pokemon" ? await getPokemonCard(cardId) : await getOnePieceCard(cardId);
-  const version = card?.versions.find((item) => item.key === versionKey);
-  return card && version ? { card, version } : null;
+  if (!card) return null;
+  const version = variant.startsWith(CUSTOM_VERSION_PREFIX)
+    ? customVersion(card.id, variant.slice(CUSTOM_VERSION_PREFIX.length), game)
+    : card.versions.find((item) => item.key === versionKey);
+  return version ? { card, version } : null;
 }
 
 export function targetFor(resolved: ResolvedVersion, language: "english" | "japanese"): CardTarget {
@@ -264,12 +308,14 @@ export function targetFor(resolved: ResolvedVersion, language: "english" | "japa
   const [number, printedTotal] = card.game === "pokemon" && card.number.includes("/")
     ? [card.number.split("/")[0], Number(card.number.split("/")[1])]
     : [card.number, null];
-  return { game: card.game, name: card.name, number, printedTotal, variantTags: version.variantTags, language };
+  return { game: card.game, name: card.name, number, printedTotal, variantTags: version.variantTags, language, mustMention: version.mustMention ?? [] };
 }
 
 /** One eBay search covering every grader: eBay treats (a,b,c) as OR. */
 export function soldSearchKeyword(resolved: ResolvedVersion) {
-  const { card } = resolved;
+  const { card, version } = resolved;
   const name = card.name.replace(/[()"]/g, " ").replace(/\s+/g, " ").trim();
-  return `${name} ${card.number} (PSA,CGC,BGS,SGC,TAG)`;
+  // A typed version narrows the eBay search too, or its sales never show up.
+  const extra = version.mustMention?.length ? ` ${version.mustMention.join(" ")}` : "";
+  return `${name} ${card.number}${extra} (PSA,CGC,BGS,SGC,TAG)`;
 }

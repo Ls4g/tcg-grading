@@ -38,6 +38,8 @@ export type CardTarget = {
   variantTags: string[];
   /** Language the user's copy is in. */
   language: "english" | "japanese";
+  /** Words the title must contain (typed "other version"). */
+  mustMention?: string[];
 };
 
 export type Grade = { company: Company; grade: number; label: string };
@@ -215,6 +217,8 @@ export function judgeListing(target: CardTarget, row: SoldRow): ListingVerdict {
   const lower = title.toLowerCase();
   if (words.length && !words.every((word) => lower.includes(word))) return reject("card name doesn't match");
   if (!mentionsCardNumber(target, title)) return reject(`doesn't show card number ${target.number}`);
+  const unmentioned = (target.mustMention ?? []).filter((word) => !lower.includes(word));
+  if (unmentioned.length) return reject(`doesn't mention "${unmentioned.join('", "')}"`);
 
   if (OTHER_LANGUAGES.test(title)) return reject("different language");
   const isJapanese = JAPANESE.test(title) && !ENGLISH.test(title);

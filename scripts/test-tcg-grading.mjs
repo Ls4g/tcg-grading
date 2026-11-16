@@ -171,4 +171,19 @@ assert.equal(suggestPsaTier(110)?.name, "Value");
 assert.equal(suggestPsaTier(800)?.name, "Regular");
 assert.equal(suggestPsaTier(20000), null);
 
-console.log("Cert dedupe, trend, odds and PSA tiers all pass.");
+// ---- Typed "other version" ----
+import { customVersion, customVersionWords } from "../lib/tcgGrading/cards.ts";
+assert.deepEqual(customVersionWords("Magazine Promo"), ["magazine", "promo"]);
+const typed = customVersion("ST21-014", "Magazine Promo", "onepiece");
+assert.equal(typed.key, "ST21-014|custom:Magazine Promo");
+const luffy = { game: "onepiece", name: "Monkey.D.Luffy", number: "ST21-014", variantTags: [], language: "japanese", mustMention: typed.mustMention };
+const luffyRows = [
+  row("One Piece Monkey D Luffy ST21-014 Magazine Promo Japanese PSA 10", 400),
+  row("One Piece Monkey D Luffy ST21-014 Japanese PSA 10", 60),
+  row("Monkey D Luffy ST21-014 Promo Japan PSA 9", 50),
+];
+assert.deepEqual(usedTitles(luffy, luffyRows), ["One Piece Monkey D Luffy ST21-014 Magazine Promo Japanese PSA 10"]);
+assert.match(judgeListing(luffy, luffyRows[1]).reason, /doesn't mention "magazine", "promo"/);
+assert.equal(customVersion("ST21-014", "  ", "onepiece"), null);
+
+console.log("Cert dedupe, trend, odds, PSA tiers and typed versions all pass.");
