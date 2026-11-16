@@ -37,7 +37,7 @@ export function parsePriceRequest(input: unknown): PriceRequest | null {
 
 export async function resolveRequest(request: PriceRequest) {
   const resolved = await resolveVersion(request.game, request.versionKey);
-  return resolved ? { resolved, keyword: soldSearchKeyword(resolved) } : null;
+  return resolved ? { resolved, keyword: soldSearchKeyword(resolved, request.language) } : null;
 }
 
 export function priceResult(resolved: ResolvedVersion, language: Language, keyword: string, search: SoldSearchOutcome): PriceResult {

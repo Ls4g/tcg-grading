@@ -312,10 +312,55 @@ export function targetFor(resolved: ResolvedVersion, language: "english" | "japa
 }
 
 /** One eBay search covering every grader: eBay treats (a,b,c) as OR. */
-export function soldSearchKeyword(resolved: ResolvedVersion) {
+// How sellers write each variant family in a title. eBay treats ("a","b") as
+// OR, so one group per family keeps every spelling in the net.
+const TAG_SEARCH_TERMS: Record<string, string[]> = {
+  "alt-art": ["parallel", "alt art", "alternate art"],
+  manga: ["manga", "comic"],
+  sp: ["SP"],
+  wanted: ["wanted"],
+  prb: ["premium booster", "the best"],
+  "1st-edition": ["1st edition", "first edition"],
+  shadowless: ["shadowless"],
+  "reverse-holo": ["reverse holo", "reverse"],
+  reprint: ["celebrations", "classic collection", "anniversary"],
+};
+const LABEL_STOP_WORDS = new Set(["promo", "pack", "card", "cards", "set", "the", "and", "of", "vol", "version", "edition", "base", "typed"]);
+
+function orGroup(terms: string[]) {
+  return `(${terms.map((term) => (term.includes(" ") ? `"${term}"` : term)).join(",")})`;
+}
+
+/** Extra eBay terms that pull this version's sales to the top of the 40. */
+export function versionSearchTerms(version: CardVersion, language: "english" | "japanese"): string[] {
+  const terms: string[] = [];
+  if (version.mustMention?.length) terms.push(...version.mustMention);
+  for (const tag of version.variantTags) {
+    const spellings = TAG_SEARCH_TERMS[tag];
+    if (spellings) terms.push(orGroup(spellings));
+  }
+  // Promo / special-set versions carry their identity in the label, not a tag.
+  if (!version.mustMention?.length && /promo|\(.*\)/i.test(version.label)) {
+    const words = version.label
+      .toLowerCase()
+      .replace(/\(.*?\)/g, " ")
+      .split(/[^\p{L}\p{N}]+/u)
+      .filter((word) => word.length > 2 && !LABEL_STOP_WORDS.has(word))
+      .slice(0, 3);
+    if (words.length) terms.push(orGroup(words));
+  }
+  if (language === "japanese") terms.push("japanese");
+  return [...new Set(terms)];
+}
+
+/**
+ * One eBay search covering every grader. The base version searches by name
+ * and number alone; any other version adds its own words, because eBay only
+ * returns the most recent 40 and a cheap base copy sells far more often.
+ */
+export function soldSearchKeyword(resolved: ResolvedVersion, language: "english" | "japanese" = "english") {
   const { card, version } = resolved;
   const name = card.name.replace(/[()"]/g, " ").replace(/\s+/g, " ").trim();
-  // A typed version narrows the eBay search too, or its sales never show up.
-  const extra = version.mustMention?.length ? ` ${version.mustMention.join(" ")}` : "";
-  return `${name} ${card.number}${extra} (PSA,CGC,BGS,SGC,TAG)`;
+  const extra = versionSearchTerms(version, language);
+  return `${name} ${card.number}${extra.length ? ` ${extra.join(" ")}` : ""} (PSA,CGC,BGS,SGC,TAG)`;
 }

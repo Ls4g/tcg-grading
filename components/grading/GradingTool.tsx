@@ -496,7 +496,9 @@ export default function GradingTool() {
             <ListingList items={excluded} showReason />
           </details>
           <p className="text-xs text-[var(--muted)]">
-            eBay search: “{sales.keyword}” · {sales.cached ? "cached result from" : "fetched"} {new Date(sales.fetchedAt).toLocaleString()}
+            eBay search: <a className="underline" target="_blank" rel="noreferrer"
+              href={`https://www.ebay.com/sch/i.html?_nkw=${encodeURIComponent(sales.keyword)}&LH_Sold=1&LH_Complete=1`}>“{sales.keyword}”</a>
+            {" "}· {sales.cached ? "cached result from" : "fetched"} {new Date(sales.fetchedAt).toLocaleString()}
             {" "}· {sales.historyCount} listing{sales.historyCount === 1 ? "" : "s"} on record for this search
             {sales.budgetRemainingUsd != null ? ` · Apify budget left this month: ${money(sales.budgetRemainingUsd)}` : ""}
           </p>
