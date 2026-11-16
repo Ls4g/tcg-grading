@@ -48,6 +48,8 @@ export type ListingVerdict = {
   soldDate: string | null;
   price: number | null;
   grade: Grade | null;
+  /** Slab certification number when the title shows one. */
+  cert: string | null;
   used: boolean;
   reason: string;
 };
@@ -85,6 +87,16 @@ export function parseGrade(title: string): Grade | null {
   if (grade === 10 && company === "CGC" && /pristine/i.test(title)) label = "CGC 10 Pristine";
   if (grade === 10 && company === "BGS" && /black\s*label/i.test(title)) label = "BGS 10 Black Label";
   return { company, grade, label };
+}
+
+// Cert numbers: PSA 8 digits, SGC 7-8, BGS 10, CGC 10 (sometimes 7-3 with a
+// dash). Anything shorter collides with card numbers and years.
+const CERT = /(?:\bcert(?:ification|ificate)?\.?\s*(?:no\.?|number|#)?\s*[:#]?\s*|#\s?)?\b(\d{7}-\d{3}|\d{8,10})\b/i;
+
+/** The slab's cert number in a title, or null. */
+export function parseCert(title: string): string | null {
+  const match = CERT.exec(title);
+  return match ? match[1].replace("-", "") : null;
 }
 
 // Titles that aren't a single, graded, ordinary copy of a card.
@@ -181,6 +193,7 @@ export function judgeListing(target: CardTarget, row: SoldRow): ListingVerdict {
     soldDate: row.endedAt ? row.endedAt.slice(0, 10) : null,
     price,
     grade: parseGrade(title),
+    cert: parseCert(title),
   };
   const reject = (reason: string): ListingVerdict => ({ ...base, used: false, reason });
 
@@ -222,6 +235,25 @@ export function judgeListing(target: CardTarget, row: SoldRow): ListingVerdict {
   return { ...base, used: true, reason: "matches" };
 }
 
+/**
+ * The same slab sold twice (relisted, or flipped) is one card, not two data
+ * points. Keep the most recent sale; mark the earlier ones excluded.
+ */
+export function dropRepeatSlabs(verdicts: ListingVerdict[]): ListingVerdict[] {
+  const latest = new Map<string, ListingVerdict>();
+  for (const verdict of verdicts) {
+    if (!verdict.used || !verdict.cert) continue;
+    const current = latest.get(verdict.cert);
+    if (!current || (verdict.soldDate ?? "") > (current.soldDate ?? "")) latest.set(verdict.cert, verdict);
+  }
+  return verdicts.map((verdict) => {
+    if (!verdict.used || !verdict.cert || latest.get(verdict.cert) === verdict) return verdict;
+    return { ...verdict, used: false, reason: `same slab (cert ${verdict.cert}) sold again later; counted once` };
+  });
+}
+
+export const RECENT_DAYS = 30;
+
 export type GradeBucket = {
   label: string;
   company: Company;
@@ -231,6 +263,10 @@ export type GradeBucket = {
   low: number;
   high: number;
   latest: string | null;
+  /** Sales in the last RECENT_DAYS. */
+  recentCount: number;
+  /** Median of those, or null when there are none. */
+  recentMedian: number | null;
 };
 
 function median(values: number[]) {
@@ -239,7 +275,8 @@ function median(values: number[]) {
   return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
 }
 
-export function bucketByGrade(verdicts: ListingVerdict[]): GradeBucket[] {
+export function bucketByGrade(verdicts: ListingVerdict[], now = Date.now()): GradeBucket[] {
+  const recentSince = new Date(now - RECENT_DAYS * 86_400_000).toISOString().slice(0, 10);
   const groups = new Map<string, ListingVerdict[]>();
   for (const verdict of verdicts) {
     if (!verdict.used || !verdict.grade || verdict.price === null) continue;
@@ -250,6 +287,7 @@ export function bucketByGrade(verdicts: ListingVerdict[]): GradeBucket[] {
   const buckets = [...groups.values()].map((list): GradeBucket => {
     const prices = list.map((item) => item.price as number);
     const grade = list[0].grade as Grade;
+    const recent = list.filter((item) => item.soldDate && item.soldDate >= recentSince).map((item) => item.price as number);
     return {
       label: grade.label,
       company: grade.company,
@@ -259,6 +297,8 @@ export function bucketByGrade(verdicts: ListingVerdict[]): GradeBucket[] {
       low: Math.min(...prices),
       high: Math.max(...prices),
       latest: list.map((item) => item.soldDate ?? "").sort().at(-1) || null,
+      recentCount: recent.length,
+      recentMedian: recent.length ? Math.round(median(recent) * 100) / 100 : null,
     };
   });
   return buckets.sort((a, b) => b.grade - a.grade || b.median - a.median);

@@ -11,7 +11,17 @@ Every listing used, and every listing excluded (with its reason and link), is sh
    - `APP_USERNAME` / `APP_PASSWORD`: the single shared login (browser sign-in prompt). With these unset, the app refuses every request.
    - `APIFY_TOKEN`: used for eBay sold-listing searches.
    - `POKEMONTCG_API_KEY` (optional): higher pokemontcg.io rate limits.
+   - `BLOB_READ_WRITE_TOKEN` (optional locally; set automatically on Vercel): persistent cache and sales history.
 3. `npm run dev`
+
+## What it does
+
+- **Grade odds → expected profit.** Enter your odds of a 10 / 9 / 8 / 7-or-lower (or pick a preset) and get one expected-profit number per grading company. Grades with no sales are reported as uncovered, not guessed.
+- **Batch.** Add up to 10 card versions, price them in one Apify run, and get a ranked table of the best grading candidates.
+- **Repeat slabs counted once.** Cert numbers are read from titles; the same slab sold twice is one data point.
+- **30-day trend** next to the 90-day median, per grade.
+- **PSA tier hint** from the expected sale price (PSA US list prices as of 2025; edit them in `lib/tcgGrading/gradingFees.ts`).
+- **Every lookup is saved** (Vercel Blob when `BLOB_READ_WRITE_TOKEN` is set, otherwise memory): results are served from the store for 12 hours, and every listing ever seen is kept in `history/` so a price history builds up beyond eBay's 90-day window.
 
 ## Cost
 
@@ -20,6 +30,8 @@ Each new card lookup is one capped Apify run (40 results, $0.20 ceiling, about $
 ## Checks
 
 `npm test`, `npm run lint`, `npx tsc --noEmit`, `npm run build`.
+
+To look at the results UI without spending Apify credit, `node --experimental-strip-types scripts/dev-fixture.mts > fixture.json` builds a realistic `/api/sales` response from real titles; serve it to the page with a browser route mock.
 
 ## Data sources
 

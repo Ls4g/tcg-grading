@@ -122,3 +122,53 @@ assert.match(losing.verdict, /^Not worth grading/);
 assert.match(adviseOn([], { rawCost: 1, sellFeePct: 13, gradingCost: {} }).verdict, /No graded sales/);
 
 console.log("TCG grading check: grade parsing, version matching and advice all pass.");
+
+// ---- Cert numbers, repeat slabs, 30-day trend, expected profit ----
+import { dropRepeatSlabs, parseCert } from "../lib/tcgGrading/listings.ts";
+import { expectedFor, outcomesFor, oddsAreUsable } from "../lib/tcgGrading/advice.ts";
+import { suggestPsaTier } from "../lib/tcgGrading/gradingFees.ts";
+
+assert.equal(parseCert("Charizard 4/102 Base Set Holo PSA 9 cert 12345678"), "12345678");
+assert.equal(parseCert("Charizard 4/102 PSA 10 #87654321 1999"), "87654321");
+assert.equal(parseCert("Shanks OP01-120 CGC 10 4195432-001"), "4195432001");
+assert.equal(parseCert("Shanks OP01-120 PSA 10 1999 Romance Dawn SWSH050"), null, "years and card codes are not certs");
+
+const repeat = dropRepeatSlabs([
+  judgeListing(zard([]), row("Charizard 4/102 PSA 9 cert 12345678", 500, { endedAt: "2026-09-01T00:00:00Z" })),
+  judgeListing(zard([]), row("Charizard 4/102 PSA 9 cert 12345678", 560, { endedAt: "2026-10-15T00:00:00Z" })),
+  judgeListing(zard([]), row("Charizard 4/102 PSA 9 cert 99999999", 520, { endedAt: "2026-10-01T00:00:00Z" })),
+]);
+assert.deepEqual(repeat.map((v) => v.used), [false, true, true]);
+assert.match(repeat[0].reason, /same slab \(cert 12345678\)/);
+
+const now = Date.parse("2026-11-16T00:00:00Z");
+const trend = bucketByGrade([
+  judgeListing(zard([]), row("Charizard 4/102 PSA 9", 100, { endedAt: "2026-08-25T00:00:00Z" })),
+  judgeListing(zard([]), row("Charizard 4/102 PSA 9", 100, { endedAt: "2026-09-20T00:00:00Z" })),
+  judgeListing(zard([]), row("Charizard 4/102 PSA 9", 80, { endedAt: "2026-11-01T00:00:00Z" })),
+  judgeListing(zard([]), row("Charizard 4/102 PSA 9", 70, { endedAt: "2026-11-10T00:00:00Z" })),
+], now);
+assert.equal(trend[0].median, 90);
+assert.equal(trend[0].recentCount, 2);
+assert.equal(trend[0].recentMedian, 75);
+
+assert.equal(oddsAreUsable({ 10: 60, 9: 30, 8: 10, 7: 0 }), true);
+assert.equal(oddsAreUsable({ 10: 60, 9: 30, 8: 20, 7: 0 }), false);
+const oddsCosts = { rawCost: 30, sellFeePct: 10, gradingCost: { PSA: 25, CGC: 20 }, gradeOdds: { 10: 50, 9: 40, 8: 10, 7: 0 } };
+const expected = expectedFor(outcomesFor(buckets, oddsCosts), oddsCosts);
+// PSA 10 net 44, PSA 9 net -14.5, no PSA 8: 0.5*44 + 0.4*-14.5 = 16.2, 90% covered.
+const psa = expected.find((e) => e.company === "PSA");
+assert.equal(psa.expectedNet, 16.2);
+assert.equal(psa.coveredPct, 90);
+assert.deepEqual(psa.missingGrades, [8]);
+// CGC: plain CGC 10 missing (only Pristine), CGC 9 net 125*0.9-30-20 = 62.5 -> 0.4*62.5 = 25, 40% covered.
+const cgc = expected.find((e) => e.company === "CGC");
+assert.equal(cgc.expectedNet, 25);
+assert.equal(cgc.coveredPct, 40);
+assert.match(adviseOn(buckets, oddsCosts).verdict, /Worth grading at your odds: expected profit \$16\.20 per card with PSA/);
+
+assert.equal(suggestPsaTier(110)?.name, "Value");
+assert.equal(suggestPsaTier(800)?.name, "Regular");
+assert.equal(suggestPsaTier(20000), null);
+
+console.log("Cert dedupe, trend, odds and PSA tiers all pass.");
