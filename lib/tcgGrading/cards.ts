@@ -328,7 +328,7 @@ const TAG_SEARCH_TERMS: Record<string, string[]> = {
 const LABEL_STOP_WORDS = new Set(["promo", "pack", "card", "cards", "set", "the", "and", "of", "vol", "version", "edition", "base", "typed"]);
 
 function orGroup(terms: string[]) {
-  return terms.map((term) => (term.includes(" ") ? `"${term}"` : term)).join(",");
+  return `(${terms.map((term) => (term.includes(" ") ? `"${term}"` : term)).join(",")})`;
 }
 
 /** Extra eBay terms that pull this version's sales to the top of the 40. */
@@ -362,5 +362,5 @@ export function soldSearchKeyword(resolved: ResolvedVersion, language: "english"
   const { card, version } = resolved;
   const name = card.name.replace(/[()"]/g, " ").replace(/\s+/g, " ").trim();
   const extra = versionSearchTerms(version, language);
-  return `${name} ${card.number}${extra.length ? ` ${extra.join(" ")}` : ""} PSA,CGC,BGS`;
+  return `${name} ${card.number}${extra.length ? ` ${extra.join(" ")}` : ""} (PSA,CGC,BGS)`;
 }
