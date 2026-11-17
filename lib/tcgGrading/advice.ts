@@ -49,10 +49,20 @@ export type BucketOutcome = GradeBucket & {
   net: number | null;
 };
 
+/** The one number the result leads with, and how much to trust it. */
+export type Headline = {
+  tone: "good" | "bad" | "thin";
+  /** Profit per card in USD; null when there is nothing to base it on. */
+  amount: number | null;
+  /** What the amount is, e.g. "expected per card with PSA". */
+  label: string;
+};
+
 export type Advice = {
   outcomes: BucketOutcome[];
   /** Per company, when odds were entered and sum to 100. */
   expected: ExpectedOutcome[];
+  headline: Headline;
   verdict: string;
   sameGrade: string[];
   crossGrade: string[];
@@ -160,6 +170,7 @@ export function adviseOn(buckets: GradeBucket[], costs: CostInputs): Advice {
     return {
       outcomes,
       expected,
+      headline: { tone: "thin", amount: null, label: "No graded sales found" },
       verdict: "No graded sales of this exact card version were found in the last 90 days, so there is nothing to base a grading decision on.",
       sameGrade: [], crossGrade: [], breakEven: [],
       warnings: ["Check the excluded listings below — the card may sell under a different version or language."],
@@ -222,11 +233,17 @@ export function adviseOn(buckets: GradeBucket[], costs: CostInputs): Advice {
   const profitable = outcomes.filter((o) => value(o) > 0);
   const solid = outcomes.filter((o) => !o.thin);
   let verdict: string;
+  let headline: Headline;
   // Trust order: a company whose result rests mostly on its own, solid sales.
   const solidExpected = expected.filter((e) => e.coveredPct >= 50 && e.thinPct < 30);
   const bestExpected = solidExpected[0] ?? expected.filter((e) => e.coveredPct >= 50)[0] ?? expected[0];
   if (bestExpected) {
     const others = expected.filter((e) => e !== bestExpected).map((e) => `${e.company} ${money(e.expectedNet)}`);
+    headline = {
+      tone: !solidExpected.includes(bestExpected) ? "thin" : bestExpected.expectedNet > 0 ? "good" : "bad",
+      amount: bestExpected.expectedNet,
+      label: `expected per card with ${bestExpected.company}, at your odds`,
+    };
     verdict = bestExpected.expectedNet > 0
       ? `Worth grading at your odds: expected profit ${money(bestExpected.expectedNet)} per card with ${bestExpected.company}${others.length ? ` (${others.join(", ")})` : ""}.`
       : `Not worth grading at your odds: expected ${money(bestExpected.expectedNet)} per card with ${bestExpected.company}${others.length ? ` (${others.join(", ")})` : ""}.`;
@@ -242,9 +259,12 @@ export function adviseOn(buckets: GradeBucket[], costs: CostInputs): Advice {
       warnings.push(`No ${bestExpected.company} sales at some grades you gave odds to; filled in: ${filled.join("; ")}.`);
     }
   } else if (!profitable.length) {
+    const bestLoss = [...outcomes].sort((a, b) => value(b) - value(a))[0];
+    headline = { tone: "bad", amount: value(bestLoss), label: `best case: ${bestLoss.label}` };
     verdict = `Not worth grading on current sales: no grade, at any company, beats ${money(costs.rawCost)} raw after fees${missingCosts.length === companies.length ? "" : " and grading costs"}.`;
   } else {
     const best = [...profitable].sort((a, b) => value(b) - value(a))[0];
+    headline = { tone: best.thin ? "thin" : "good", amount: value(best), label: `if it gets ${best.label}` };
     const minGrade = Math.min(...profitable.map((o) => o.grade));
     const belowTen = outcomes.filter((o) => o.grade < 10);
     if (profitable.every((o) => o.grade === 10) && belowTen.length) {
@@ -257,10 +277,10 @@ export function adviseOn(buckets: GradeBucket[], costs: CostInputs): Advice {
   }
 
   if (!solid.length) warnings.push(`Every grade here has fewer than ${THIN_DATA} sales — treat all of it as a rough guide.`);
-  else if (outcomes.some((o) => o.thin)) warnings.push(`* = fewer than ${THIN_DATA} sales at that grade; one odd sale can swing it.`);
+  else if (outcomes.some((o) => o.thin)) warnings.push(`* (and FEW in the table) = fewer than ${THIN_DATA} sales at that grade; one odd sale can swing it.`);
   if (missingCosts.length) warnings.push(`No grading cost entered for ${missingCosts.join(", ")} — profit shown for them is before grading cost.`);
 
   if (costs.gradeOdds && !oddsAreUsable(costs.gradeOdds)) warnings.push("Your grade odds don't add up to 100%, so expected profit isn't shown.");
 
-  return { outcomes, expected, verdict, sameGrade, crossGrade, breakEven, warnings };
+  return { outcomes, expected, headline, verdict, sameGrade, crossGrade, breakEven, warnings };
 }

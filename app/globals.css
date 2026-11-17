@@ -1,26 +1,47 @@
 @import "tailwindcss";
 
 :root {
-  --bg: #ffffff;
+  --bg: #f6f7f9;
+  --surface: #ffffff;
   --fg: #16181d;
   --muted: #5d6470;
-  --line: #d9dde3;
+  --line: #dde1e6;
   --action: #1f6f4a;
+  --good: #1f7a4d;
+  --good-soft: #e8f4ee;
+  --bad: #b42318;
+  --bad-soft: #fdecea;
+  --thin: #a15c07;
+  --thin-soft: #fdf3e2;
   color-scheme: light dark;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #111317;
+    --bg: #0e1013;
+    --surface: #16191e;
     --fg: #eceef1;
     --muted: #9aa1ad;
-    --line: #2c3038;
+    --line: #2a2f37;
     --action: #2f8f62;
+    --good: #4cc38a;
+    --good-soft: #13281e;
+    --bad: #f97066;
+    --bad-soft: #2d1513;
+    --thin: #f5b546;
+    --thin-soft: #2b2110;
   }
 }
 
 body {
   background: var(--bg);
   color: var(--fg);
-  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-family: var(--font-inter), ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+@keyframes tcg-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }

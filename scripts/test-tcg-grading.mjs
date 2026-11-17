@@ -284,4 +284,15 @@ assert.equal(dropPriceOutliers(baseTens.slice(5, 8)).every((v) => v.used), true)
 // Low outliers too.
 assert.match(dropPriceOutliers([...baseTens.slice(0, 5), judgeListing(gear5, row("One Piece Monkey D. Luffy OP05-119 PSA 10 low", 9))]).find((v) => v.price === 9).reason, /under a third/);
 
-console.log("Cert dedupe, trend, odds, PSA tiers, typed versions, search terms, live-run regressions, CompSniper rows and outliers all pass.");
+// ---- Headline (the big number the result leads with) ----
+assert.deepEqual(oddsAdvice.headline, { tone: "good", amount: 13.4, label: "expected per card with PSA, at your odds" });
+assert.equal(thinAdvice.headline.label, "expected per card with PSA, at your odds");
+assert.equal(losing.headline.tone, "bad");
+assert.ok(losing.headline.amount < 0);
+assert.deepEqual(adviseOn([], { rawCost: 1, sellFeePct: 13, gradingCost: {} }).headline, { tone: "thin", amount: null, label: "No graded sales found" });
+const noOdds = adviseOn(buckets, { rawCost: 30, sellFeePct: 10, gradingCost: { PSA: 25, CGC: 20 } });
+// Best plain result is the 1-sale CGC 10 Pristine: shown, but flagged as thin.
+assert.equal(noOdds.headline.tone, "thin");
+assert.match(noOdds.headline.label, /^if it gets CGC 10 Pristine/);
+
+console.log("Cert dedupe, trend, odds, PSA tiers, typed versions, search terms, live-run regressions, CompSniper rows, outliers and headline all pass.");

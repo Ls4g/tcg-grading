@@ -22,9 +22,9 @@ const money = (value: number) => `${value < 0 ? "−" : ""}$${Math.abs(value).to
 const signed = (value: number) => `${value >= 0 ? "+" : "−"}${money(Math.abs(value))}`;
 
 const ODDS_PRESETS: Array<{ name: string; odds: GradeOdds }> = [
-  { name: "Pack fresh, confident", odds: { 10: 60, 9: 30, 8: 10, 7: 0 } },
+  { name: "Pack fresh", odds: { 10: 60, 9: 30, 8: 10, 7: 0 } },
   { name: "Looks clean", odds: { 10: 30, 9: 45, 8: 20, 7: 5 } },
-  { name: "Played / unsure", odds: { 10: 5, 9: 30, 8: 40, 7: 25 } },
+  { name: "Played", odds: { 10: 5, 9: 30, 8: 40, 7: 25 } },
 ];
 const EMPTY_ODDS: Record<OddsGrade, string> = { 10: "", 9: "", 8: "", 7: "" };
 
@@ -64,6 +64,8 @@ export default function GradingTool() {
   const [customOpen, setCustomOpen] = useState(false);
   const [sales, setSales] = useState<PriceResult | null>(null);
   const [pricing, setPricing] = useState(false);
+  const [pricingSeconds, setPricingSeconds] = useState(0);
+  const [numbersOpen, setNumbersOpen] = useState(true);
   const [error, setError] = useState("");
 
   const [rawCost, setRawCost] = useState("");
@@ -149,9 +151,16 @@ export default function GradingTool() {
     setRawCost("");
   }
 
+  useEffect(() => {
+    if (!pricing) return;
+    const started = Date.now();
+    const timer = setInterval(() => setPricingSeconds(Math.round((Date.now() - started) / 1000)), 1000);
+    return () => clearInterval(timer);
+  }, [pricing]);
+
   async function getPrices() {
     if (!card || !versionKey) return;
-    setPricing(true); setError(""); setSales(null);
+    setPricing(true); setPricingSeconds(0); setError(""); setSales(null);
     try {
       const response = await fetch("/api/sales", {
         method: "POST",
@@ -161,6 +170,8 @@ export default function GradingTool() {
       const data = await response.json();
       if (!response.ok) throw new Error(data.error ?? "Price search failed.");
       setSales(data);
+      // Numbers already set: fold them away so the answer is what you see.
+      if (oddsAreUsable(toOdds(oddsText)) && Object.values(gradingCost).some((v) => numberOrNull(v ?? "") != null)) setNumbersOpen(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Price search failed.");
     } finally {
@@ -211,7 +222,9 @@ export default function GradingTool() {
   }), [rawCost, sellFeePct, gradingCost, gradeOdds]);
 
   const advice = useMemo(() => (sales ? adviseOn(sales.buckets, costs) : null), [sales, costs]);
-  const companies = useMemo(() => [...new Set(sales?.buckets.map((b) => b.company) ?? [])], [sales]);
+  // Grading costs can be entered before the lookup; any other company that
+  // turns up in the sales gets its own box too.
+  const costCompanies = useMemo(() => [...new Set<Company>(["PSA", "CGC", "BGS", ...(sales?.buckets.map((b) => b.company) ?? [])])], [sales]);
   const used = useMemo(() => sales?.listings.filter((l) => l.used) ?? [], [sales]);
   const excluded = sales?.listings.filter((l) => !l.used) ?? [];
   // eBay returns the newest 40 only; for a popular card that can be days, not 90.
@@ -244,286 +257,378 @@ export default function GradingTool() {
   }, [batchRows, costs]);
 
   const chip = (active: boolean) =>
-    `rounded-full border px-3 py-1.5 text-sm transition ${active ? "border-[var(--action)] bg-[var(--action)] text-white" : "border-[var(--line)] hover:border-[var(--action)]"}`;
-  const input = "w-full rounded-md border border-[var(--line)] bg-transparent px-3 py-2 text-base";
-  const button = "rounded-md bg-[var(--action)] px-5 py-2 font-semibold text-white disabled:opacity-60";
-  const quiet = "rounded-md border border-[var(--line)] px-4 py-2 text-sm font-semibold hover:border-[var(--action)] disabled:opacity-60";
+    `rounded-full border px-3.5 py-1.5 text-sm transition ${active ? "border-[var(--action)] bg-[var(--action)] text-white" : "border-[var(--line)] bg-[var(--surface)] hover:border-[var(--action)]"}`;
+  const input = "w-full rounded-lg border border-[var(--line)] bg-[var(--surface)] px-3 py-2 text-base outline-none focus:border-[var(--action)]";
+  const button = "rounded-lg bg-[var(--action)] px-5 py-2.5 font-semibold text-white shadow-sm transition hover:brightness-110 disabled:opacity-60";
+  const quiet = "rounded-lg border border-[var(--line)] bg-[var(--surface)] px-4 py-2 text-sm font-semibold transition hover:border-[var(--action)] disabled:opacity-60";
+  const card$ = "rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-4 sm:p-5";
+  const toneColor = { good: "var(--good)", bad: "var(--bad)", thin: "var(--thin)" } as const;
+  const toneSoft = { good: "var(--good-soft)", bad: "var(--bad-soft)", thin: "var(--thin-soft)" } as const;
+  const toneWord = { good: "Worth grading", bad: "Not worth grading", thin: "Too little data to be sure" } as const;
+
+  const activePreset = ODDS_PRESETS.find((preset) => ODDS_GRADES.every((g) => oddsText[g] === String(preset.odds[g])))?.name ?? null;
+  const numbersSummary = [
+    rawCost ? `raw ${money(numberOrNull(rawCost) ?? 0)}` : "raw cost not set",
+    `fees ${sellFeePct || 0}%`,
+    ...costCompanies.filter((c) => numberOrNull(gradingCost[c] ?? "") != null).map((c) => `${c} ${money(numberOrNull(gradingCost[c] ?? "") ?? 0)}`),
+    gradeOdds && oddsAreUsable(gradeOdds) ? `odds ${ODDS_GRADES.map((g) => gradeOdds[g]).join("/")}` : "no odds",
+  ].join(" · ");
 
   const oddsEditor = (
-    <div className="rounded-lg border border-[var(--line)] p-4">
+    <div>
       <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <p className="font-semibold">What grade will it get? (your odds, %)</p>
-        <p className={`text-xs ${gradeOdds && !oddsAreUsable(gradeOdds) ? "text-red-600" : "text-[var(--muted)]"}`}>
-          {gradeOdds ? `Total ${Math.round(oddsTotal)}%` : "Optional. Turns the table into one expected-profit number."}
+        <p className="text-sm font-semibold">What grade will it get? <span className="font-normal text-[var(--muted)]">(your odds, %)</span></p>
+        <p className="text-xs" style={{ color: gradeOdds && !oddsAreUsable(gradeOdds) ? "var(--bad)" : "var(--muted)" }}>
+          {gradeOdds ? `Total ${Math.round(oddsTotal)}%${oddsAreUsable(gradeOdds) ? "" : " — needs to be 100%"}` : "Optional: gives one expected-profit number."}
         </p>
+      </div>
+      <div className="mt-2 inline-flex w-full flex-wrap rounded-lg border border-[var(--line)] p-1 sm:w-auto" role="group" aria-label="Odds presets">
+        {[...ODDS_PRESETS.map((p) => p.name), "Custom"].map((name) => {
+          const active = name === "Custom" ? !activePreset && Boolean(gradeOdds) : activePreset === name;
+          return (
+            <button key={name} type="button" aria-pressed={active}
+              className={`flex-1 rounded-md px-3 py-1.5 text-sm transition sm:flex-none ${active ? "bg-[var(--action)] font-semibold text-white" : "hover:bg-[var(--bg)]"}`}
+              onClick={() => {
+                const preset = ODDS_PRESETS.find((p) => p.name === name);
+                if (preset) setOddsText(Object.fromEntries(ODDS_GRADES.map((g) => [g, String(preset.odds[g])])) as Record<OddsGrade, string>);
+              }}>
+              {name}
+            </button>
+          );
+        })}
       </div>
       <div className="mt-2 grid grid-cols-4 gap-2">
         {ODDS_GRADES.map((grade) => (
           <label key={grade} className="text-sm">
-            <span className="block text-xs font-semibold">{grade === 7 ? "7 or lower" : `Grade ${grade}`}</span>
+            <span className="block text-xs text-[var(--muted)]">{grade === 7 ? "7 or lower" : `Grade ${grade}`}</span>
             <input className={input} inputMode="decimal" value={oddsText[grade]} placeholder="%"
               onChange={(e) => setOddsText((prev) => ({ ...prev, [grade]: e.target.value }))} />
           </label>
         ))}
       </div>
-      <div className="mt-2 flex flex-wrap gap-2">
-        {ODDS_PRESETS.map((preset) => (
-          <button key={preset.name} type="button" className={quiet}
-            onClick={() => setOddsText(Object.fromEntries(ODDS_GRADES.map((g) => [g, String(preset.odds[g])])) as Record<OddsGrade, string>)}>
-            {preset.name}
-          </button>
-        ))}
-        <button type="button" className={quiet} onClick={() => setOddsText(EMPTY_ODDS)}>Clear</button>
-      </div>
+      {gradeOdds && <button type="button" className="mt-1 text-xs text-[var(--muted)] underline" onClick={() => setOddsText(EMPTY_ODDS)}>Clear odds</button>}
+    </div>
+  );
+
+  const step = (n: number, title: string, done = false) => (
+    <div className="mb-3 flex items-center gap-2.5">
+      <span className="grid h-7 w-7 shrink-0 place-items-center rounded-full text-sm font-bold"
+        style={{ background: done ? "var(--action)" : "var(--bg)", color: done ? "#fff" : "var(--fg)", border: done ? "none" : "1px solid var(--line)" }}>
+        {done ? "✓" : n}
+      </span>
+      <h2 className="text-lg font-bold">{title}</h2>
     </div>
   );
 
   return (
-    <main className="mx-auto w-full max-w-5xl px-4 py-8 sm:py-12">
-      <header className="mb-6">
-        <h1 className="text-3xl font-bold sm:text-4xl">Grading check</h1>
-        <p className="mt-2 text-[var(--muted)]">
-          Look up a card to see what it actually sells for at each grade and grading company, and whether grading pays.
-        </p>
+    <main className="mx-auto w-full max-w-4xl px-4 py-6 sm:py-10">
+      <header className="mb-6 flex items-center gap-3">
+        <svg width="40" height="40" viewBox="0 0 40 40" aria-hidden="true" className="shrink-0">
+          <rect x="7" y="3" width="26" height="34" rx="4" fill="var(--action)" />
+          <rect x="10" y="6" width="20" height="5" rx="1.5" fill="#fff" opacity="0.9" />
+          <rect x="10" y="14" width="20" height="20" rx="2" fill="#fff" opacity="0.18" />
+          <path d="M14.5 24.5l4 4 7.5-8" fill="none" stroke="#fff" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+        <div>
+          <h1 className="text-2xl font-extrabold tracking-tight sm:text-3xl">Grading Check</h1>
+          <p className="text-sm text-[var(--muted)]">Real graded sold prices, and whether grading your card pays.</p>
+        </div>
       </header>
 
-      <form onSubmit={search} className="flex flex-col gap-3 sm:flex-row sm:items-center">
-        <div className="flex gap-2">
-          <button type="button" className={chip(game === "pokemon")} onClick={() => { setGame("pokemon"); setCards(null); setCard(null); setSales(null); setLanguage("english"); }}>Pokémon</button>
-          <button type="button" className={chip(game === "onepiece")} onClick={() => { setGame("onepiece"); setCards(null); setCard(null); setSales(null); }}>One Piece</button>
-        </div>
-        <input
-          className={input}
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder={game === "pokemon" ? "e.g. Charizard 4/102 or Umbreon VMAX" : "e.g. Shanks or OP01-120"}
-          aria-label="Card name or number"
-        />
-        <button type="submit" disabled={searching} className={button}>
-          {searching ? "Searching…" : "Search"}
-        </button>
-      </form>
+      <section className={card$}>
+        {step(1, "Find your card", Boolean(card))}
+        <form onSubmit={search} className="flex flex-col gap-3 sm:flex-row sm:items-center">
+          <div className="flex gap-2">
+            <button type="button" className={chip(game === "pokemon")} onClick={() => { setGame("pokemon"); setCards(null); setCard(null); setSales(null); setLanguage("english"); }}>Pokémon</button>
+            <button type="button" className={chip(game === "onepiece")} onClick={() => { setGame("onepiece"); setCards(null); setCard(null); setSales(null); }}>One Piece</button>
+          </div>
+          <input className={input} value={query} onChange={(e) => setQuery(e.target.value)}
+            placeholder={game === "pokemon" ? "e.g. Charizard 4/102 or Umbreon VMAX" : "e.g. Shanks or OP01-120"} aria-label="Card name or number" />
+          <button type="submit" disabled={searching} className={button}>{searching ? "Searching…" : "Search"}</button>
+        </form>
 
-      {error && <p role="alert" className="mt-4 rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm">{error}</p>}
+        {cards && !card && (
+          <div className="mt-4">
+            {cards.length === 0 ? (
+              <p className="text-[var(--muted)]">No cards found. Try just the name, or the card number.</p>
+            ) : (
+              <ul className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                {cards.map((item) => (
+                  <li key={`${item.game}-${item.id}`}>
+                    <button type="button" onClick={() => pickCard(item)} className="w-full rounded-xl border border-[var(--line)] p-2 text-left transition hover:border-[var(--action)] hover:shadow-sm">
+                      {item.image && <img src={item.image} alt="" loading="lazy" className="mx-auto aspect-[63/88] w-full rounded-lg object-contain" />}
+                      <span className="mt-2 block text-sm font-semibold leading-tight">{item.name}</span>
+                      <span className="block text-xs text-[var(--muted)]">{item.number} · {item.setName}</span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+      </section>
 
-      {cards && !card && (
-        <section className="mt-6">
-          {cards.length === 0 ? (
-            <p className="text-[var(--muted)]">No cards found. Try just the name, or the card number.</p>
-          ) : (
-            <ul className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-5">
-              {cards.map((item) => (
-                <li key={`${item.game}-${item.id}`}>
-                  <button type="button" onClick={() => pickCard(item)} className="w-full rounded-lg border border-[var(--line)] p-2 text-left hover:border-[var(--action)]">
-                    {item.image && <img src={item.image} alt="" loading="lazy" className="mx-auto aspect-[63/88] w-full rounded object-contain" />}
-                    <span className="mt-2 block text-sm font-semibold leading-tight">{item.name}</span>
-                    <span className="block text-xs text-[var(--muted)]">{item.number} · {item.setName}</span>
+      {error && <p role="alert" className="mt-4 rounded-xl px-4 py-3 text-sm" style={{ background: "var(--bad-soft)", color: "var(--bad)" }}>{error}</p>}
+
+      {card && (
+        <section className={`${card$} mt-4`}>
+          {step(2, "Pick the exact version", Boolean(sales))}
+          <div className="grid gap-5 sm:grid-cols-[200px_1fr]">
+            <div className="flex gap-4 sm:block">
+              {card.image && <img src={card.image} alt={card.name} className="w-32 shrink-0 rounded-xl shadow-md sm:w-full" />}
+              <div className="sm:mt-3">
+                <p className="text-xl font-bold leading-tight sm:hidden">{card.name}</p>
+                <p className="text-sm text-[var(--muted)] sm:hidden">{card.number} · {card.setName}{card.rarity ? ` · ${card.rarity}` : ""}</p>
+                <button type="button" className="mt-2 text-sm underline sm:mt-0" onClick={() => { setCard(null); setSales(null); }}>← Other results</button>
+              </div>
+            </div>
+            <div className="min-w-0">
+              <p className="hidden text-2xl font-bold leading-tight sm:block">{card.name}</p>
+              <p className="hidden text-[var(--muted)] sm:block">{card.number} · {card.setName}{card.rarity ? ` · ${card.rarity}` : ""}</p>
+
+              <p className="mt-4 text-sm font-semibold">Version</p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {card.versions.map((version) => (
+                  <button key={version.key} type="button" className={chip(version.key === versionKey)} onClick={() => pickVersion(version)}>
+                    {version.label}{version.rawMarketUsd != null ? <span className="opacity-75"> · {money(version.rawMarketUsd)}</span> : ""}
                   </button>
-                </li>
-              ))}
-            </ul>
-          )}
+                ))}
+                <button type="button" className={chip(customOpen)} onClick={() => setCustomOpen((open) => !open)}>Other version…</button>
+              </div>
+              {customOpen && (
+                <div className="mt-2 rounded-xl border border-[var(--line)] p-3 text-sm">
+                  <label className="block font-semibold">Type the version as sellers write it</label>
+                  <div className="mt-1 flex gap-2">
+                    <input className={input} value={customText} placeholder="e.g. Magazine Promo" maxLength={40}
+                      onChange={(e) => { setCustomText(e.target.value); setSales(null); }}
+                      onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); applyTypedVersion(); } }} />
+                    <button type="button" className={quiet} disabled={!typedVersion} onClick={applyTypedVersion}>Use</button>
+                  </div>
+                  <p className="mt-1 text-xs text-[var(--muted)]">
+                    For versions the card list doesn&apos;t have, like a Japanese magazine promo. Only graded sales whose title has every word you type are counted
+                    {typedVersion?.key === versionKey ? `. Using: "${typedVersion.label}"` : ""}. No raw price is known for a typed version, so enter yours.
+                  </p>
+                </div>
+              )}
+
+              {card.game === "onepiece" && (
+                <>
+                  <p className="mt-4 text-sm font-semibold">Language</p>
+                  <div className="mt-2 flex gap-2">
+                    {(["english", "japanese"] as const).map((lang) => (
+                      <button key={lang} type="button" className={chip(language === lang)} onClick={() => {
+                        setLanguage(lang); setSales(null);
+                        setRawCost(lang === "english" && selectedVersion?.rawMarketUsd != null ? String(selectedVersion.rawMarketUsd) : "");
+                      }}>
+                        {lang === "english" ? "English" : "Japanese"}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
         </section>
       )}
 
       {card && (
-        <section className="mt-6 grid gap-6 sm:grid-cols-[180px_1fr]">
-          <div>
-            {card.image && <img src={card.image} alt={card.name} className="w-full max-w-[140px] rounded sm:max-w-[180px]" />}
-            <button type="button" className="mt-2 text-sm underline" onClick={() => { setCard(null); setSales(null); }}>← Back to results</button>
-          </div>
-          <div className="min-w-0">
-            <h2 className="text-2xl font-bold">{card.name}</h2>
-            <p className="text-[var(--muted)]">{card.number} · {card.setName}{card.rarity ? ` · ${card.rarity}` : ""}</p>
-
-            <p className="mt-4 text-sm font-semibold">Which version do you have?</p>
-            <div className="mt-2 flex flex-wrap gap-2">
-              {card.versions.map((version) => (
-                <button key={version.key} type="button" className={chip(version.key === versionKey)} onClick={() => pickVersion(version)}>
-                  {version.label}{version.rawMarketUsd != null ? ` · ${money(version.rawMarketUsd)} raw` : ""}
-                </button>
-              ))}
-              <button type="button" className={chip(customOpen)} onClick={() => setCustomOpen((open) => !open)}>Other version…</button>
-            </div>
-            {customOpen && (
-              <div className="mt-2 rounded-lg border border-[var(--line)] p-3 text-sm">
-                <label className="block font-semibold">Type the version as sellers write it</label>
-                <div className="mt-1 flex gap-2">
-                  <input className={input} value={customText} placeholder="e.g. Magazine Promo" maxLength={40}
-                    onChange={(e) => { setCustomText(e.target.value); setSales(null); }}
-                    onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); applyTypedVersion(); } }} />
-                  <button type="button" className={quiet} disabled={!typedVersion} onClick={applyTypedVersion}>Use</button>
-                </div>
-                <p className="mt-1 text-xs text-[var(--muted)]">
-                  For versions the card list doesn&apos;t have, like a Japanese magazine promo. Only graded sales whose title has every word you type are counted
-                  {typedVersion?.key === versionKey ? `. Using: "${typedVersion.label}"` : ""}. No raw price is known for a typed version, so enter yours.
-                </p>
+        <section className={`${card$} mt-4`}>
+          <details open={numbersOpen} onToggle={(e) => setNumbersOpen((e.currentTarget as HTMLDetailsElement).open)}>
+            <summary className="flex cursor-pointer list-none items-start justify-between gap-3 [&::-webkit-details-marker]:hidden">
+              <div className="min-w-0">
+                {step(3, "Your costs and odds")}
+                {!numbersOpen && <p className="-mt-1 truncate pl-10 text-sm text-[var(--muted)]">{numbersSummary}</p>}
               </div>
-            )}
-
-            {card.game === "onepiece" && (
-              <>
-                <p className="mt-4 text-sm font-semibold">Language</p>
-                <div className="mt-2 flex gap-2">
-                  {(["english", "japanese"] as const).map((lang) => (
-                    <button key={lang} type="button" className={chip(language === lang)} onClick={() => {
-                      setLanguage(lang); setSales(null);
-                      setRawCost(lang === "english" && selectedVersion?.rawMarketUsd != null ? String(selectedVersion.rawMarketUsd) : "");
-                    }}>
-                      {lang === "english" ? "English" : "Japanese"}
-                    </button>
-                  ))}
-                </div>
-              </>
-            )}
-
-            <div className="mt-5 flex flex-wrap items-center gap-2">
-              <button type="button" onClick={getPrices} disabled={pricing || !versionKey} className={`${button} py-2.5`}>
-                {pricing ? "Pulling eBay sold prices… (up to a minute)" : "Get graded sold prices"}
-              </button>
-              <button type="button" onClick={addToBatch} disabled={!versionKey || inBatch || batch.length >= BATCH_MAX} className={quiet}>
-                {inBatch ? "In batch ✓" : batch.length >= BATCH_MAX ? `Batch full (${BATCH_MAX})` : "+ Add to batch"}
-              </button>
+              <span className="mt-1 shrink-0 text-sm text-[var(--muted)] underline">{numbersOpen ? "Hide" : "Edit"}</span>
+            </summary>
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              <label className="text-sm">
+                <span className="block font-semibold">Raw card cost (USD)</span>
+                <input className={input} inputMode="decimal" value={rawCost} onChange={(e) => setRawCost(e.target.value)} placeholder="What you paid or could sell it for" />
+                <span className="text-xs text-[var(--muted)]">{selectedVersion?.rawMarketUsd != null && language === "english" ? `TCGplayer market: ${money(selectedVersion.rawMarketUsd)}` : "No raw market price for this version — enter yours."}</span>
+              </label>
+              <label className="text-sm">
+                <span className="block font-semibold">Selling fees %</span>
+                <input className={input} inputMode="decimal" value={sellFeePct} onChange={(e) => setSellFeePct(e.target.value)} />
+                <span className="text-xs text-[var(--muted)]">eBay + payment fees on the sale.</span>
+              </label>
+              {costCompanies.map((company) => (
+                <label key={company} className="text-sm">
+                  <span className="block font-semibold">{company} cost per card</span>
+                  <input className={input} inputMode="decimal" value={gradingCost[company] ?? ""} placeholder="Fee + shipping"
+                    onChange={(e) => setGradingCost((prev) => ({ ...prev, [company]: e.target.value }))} />
+                  {company === "PSA" && psaTier && (
+                    <span className="text-xs text-[var(--muted)]">
+                      PSA {psaTier.name} tier fits (up to {money(psaTier.maxDeclaredUsd)} value): {money(psaTier.feeUsd)} + shipping, {PSA_FEES_AS_OF} list.{" "}
+                      <button type="button" className="underline" onClick={() => setGradingCost((prev) => ({ ...prev, PSA: String(psaTier.feeUsd) }))}>Use it</button>
+                    </span>
+                  )}
+                </label>
+              ))}
             </div>
-            <p className="mt-1 text-xs text-[var(--muted)]">Searches up to 80 eBay.com sold listings from the last 90 days, with the real price of accepted offers where known. Each new search uses up to {money(COST_PER_LOOKUP_USD)} of the Apify budget; repeat lookups within 12 hours are free.</p>
+            <div className="mt-4 border-t border-[var(--line)] pt-4">{oddsEditor}</div>
+          </details>
+
+          <div className="mt-5 flex flex-wrap items-center gap-2 border-t border-[var(--line)] pt-4">
+            <button type="button" onClick={getPrices} disabled={pricing || !versionKey} className={button}>
+              {sales ? "Refresh sold prices" : "Get graded sold prices"}
+            </button>
+            <button type="button" onClick={addToBatch} disabled={!versionKey || inBatch || batch.length >= BATCH_MAX} className={quiet}>
+              {inBatch ? "In batch ✓" : batch.length >= BATCH_MAX ? `Batch full (${BATCH_MAX})` : "+ Add to batch"}
+            </button>
+          </div>
+          <p className="mt-2 text-xs text-[var(--muted)]">Searches up to 80 eBay.com sold listings from the last 90 days. Each new search uses up to {money(COST_PER_LOOKUP_USD)} of the Apify budget; repeat lookups within 12 hours are free.</p>
+        </section>
+      )}
+
+      {pricing && (
+        <section className={`${card$} mt-4 flex items-center gap-4`} role="status" aria-live="polite">
+          <span className="h-9 w-9 shrink-0 rounded-full border-4 border-[var(--line)]" style={{ borderTopColor: "var(--action)", animation: "tcg-spin 0.9s linear infinite" }} aria-hidden="true" />
+          <div>
+            <p className="font-semibold">Searching eBay sold listings…</p>
+            <p className="text-sm text-[var(--muted)]">
+              Usually 30–60 seconds. {pricingSeconds}s so far.
+              {pricingSeconds > 75 ? " Busy cards take longer; it gives up after 3 minutes." : " You can keep this tab open in the background."}
+            </p>
           </div>
         </section>
       )}
 
-      {sales && advice && (
-        <section className="mt-8 space-y-6">
-          <div className="rounded-lg border-2 border-[var(--action)] p-4">
-            <p className="text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">Verdict · {sales.version.label}{sales.card.game === "onepiece" ? ` · ${sales.language === "english" ? "English" : "Japanese"}` : ""}</p>
-            <p className="mt-1 text-lg font-semibold">{advice.verdict}</p>
-          </div>
-
-          <div className="grid gap-3 rounded-lg border border-[var(--line)] p-4 sm:grid-cols-2 lg:grid-cols-4">
-            <label className="text-sm">
-              <span className="block font-semibold">Raw card cost (USD)</span>
-              <input className={input} inputMode="decimal" value={rawCost} onChange={(e) => setRawCost(e.target.value)} placeholder="What you pay" />
-              <span className="text-xs text-[var(--muted)]">{selectedVersion?.rawMarketUsd != null && sales.language === "english" ? `TCGplayer market: ${money(selectedVersion.rawMarketUsd)}` : "No raw market price for this version — enter yours."}</span>
-            </label>
-            <label className="text-sm">
-              <span className="block font-semibold">Selling fees %</span>
-              <input className={input} inputMode="decimal" value={sellFeePct} onChange={(e) => setSellFeePct(e.target.value)} />
-              <span className="text-xs text-[var(--muted)]">eBay + payment fees on the sale.</span>
-            </label>
-            {companies.map((company) => (
-              <label key={company} className="text-sm">
-                <span className="block font-semibold">{company} cost per card</span>
-                <input className={input} inputMode="decimal" value={gradingCost[company] ?? ""} placeholder="Fee + shipping"
-                  onChange={(e) => setGradingCost((prev) => ({ ...prev, [company]: e.target.value }))} />
-                {company === "PSA" && psaTier && (
-                  <span className="text-xs text-[var(--muted)]">
-                    PSA {psaTier.name} tier fits (declared value up to {money(psaTier.maxDeclaredUsd)}): {money(psaTier.feeUsd)} + shipping, {PSA_FEES_AS_OF} US list.{" "}
-                    <button type="button" className="underline" onClick={() => setGradingCost((prev) => ({ ...prev, PSA: String(psaTier.feeUsd) }))}>Use it</button>
-                  </span>
-                )}
-              </label>
-            ))}
-          </div>
-
-          {oddsEditor}
-
-          {advice.expected.length > 0 && (
-            <div>
-              <h3 className="font-semibold">Expected profit per card, at your odds</h3>
-              <ul className="mt-1 space-y-1 text-sm">
-                {advice.expected.map((e) => (
-                  <li key={e.company}>
-                    <span className={`font-semibold tabular-nums ${e.expectedNet > 0 ? "text-[var(--action)]" : "text-red-600"}`}>{signed(e.expectedNet)}</span>
-                    {" "}with {e.company}
-                    {e.coveredPct < 100 ? <span className="text-[var(--muted)]"> · {e.coveredPct}% from its own sales; no {e.company} sales at {e.missingGrades.map((g) => (g === 7 ? "≤7" : g)).join(", ")}</span> : ""}
-                    {e.thinPct >= 30 ? <span className="text-[var(--muted)]"> · {e.thinPct}% rests on grades with under 3 sales</span> : ""}
-                    <span className="block text-xs text-[var(--muted)]">{e.used.map((u) => `${u.oddsPct}% × ${u.label} ${signed(u.net)}`).join(" + ")}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-
-          {advice.outcomes.length > 0 && (
-            <div className="overflow-x-auto">
-              <table className="w-full border-collapse text-sm">
-                <thead>
-                  <tr className="border-b border-[var(--line)] text-left">
-                    <th className="py-2 pr-3">Grade</th><th className="py-2 pr-3">Sales</th><th className="py-2 pr-3">Median sold</th>
-                    <th className="py-2 pr-3">Last 30d</th>
-                    <th className="hidden py-2 pr-3 sm:table-cell">Range</th><th className="py-2 pr-3">Profit</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {advice.outcomes.map((o) => {
-                    const profit = o.net ?? o.uplift;
-                    const move = o.recentMedian != null && o.median > 0 ? Math.round((o.recentMedian / o.median - 1) * 100) : null;
-                    return (
-                      <tr key={o.label} className="border-b border-[var(--line)]">
-                        <td className="py-2 pr-3 font-semibold">{o.label}</td>
-                        <td className="py-2 pr-3">{o.count}{o.thin ? " *" : ""}</td>
-                        <td className="py-2 pr-3 tabular-nums">{money(o.median)}</td>
-                        <td className="py-2 pr-3 tabular-nums">
-                          {o.recentMedian == null ? <span className="text-[var(--muted)]">none</span> : (
-                            <>
-                              {money(o.recentMedian)}
-                              <span className={`text-xs ${move != null && Math.abs(move) >= 10 ? (move > 0 ? "text-[var(--action)]" : "text-red-600") : "text-[var(--muted)]"}`}>
-                                {" "}({o.recentCount} sale{o.recentCount === 1 ? "" : "s"}{move != null && move !== 0 ? `, ${move > 0 ? "+" : ""}${move}%` : ""})
-                              </span>
-                            </>
-                          )}
-                        </td>
-                        <td className="hidden py-2 pr-3 tabular-nums text-[var(--muted)] sm:table-cell">{o.low === o.high ? "—" : `${money(o.low)}–${money(o.high)}`}</td>
-                        <td className={`py-2 pr-3 font-semibold tabular-nums ${profit > 0 ? "text-[var(--action)]" : "text-red-600"}`}>
-                          {signed(profit)}{o.net === null ? " †" : ""}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-              <p className="mt-1 text-xs text-[var(--muted)]">Profit = median sold − fees − raw cost − grading cost. † = grading cost not entered yet. Sales priced over 3× or under ⅓ of the rest of their grade are left out (see Excluded). Last 30d = median of sales in the last 30 days, and how far it sits from the 90-day median.</p>
-            </div>
-          )}
-
-          {span && (
-            <p className="text-sm text-[var(--muted)]">
-              Sales used run from {span.from} to {span.to} ({span.days} day{span.days === 1 ? "" : "s"}).
-              {span.days < 30 ? " eBay only returns the newest 40 listings, so for a card this busy the medians cover a short window, not 90 days." : ""}
+      {sales && advice && !pricing && (
+        <section className="mt-4 space-y-4">
+          <div className="rounded-2xl border-2 p-5 sm:p-6" style={{ borderColor: toneColor[advice.headline.tone], background: toneSoft[advice.headline.tone] }}>
+            <p className="text-xs font-semibold uppercase tracking-wide" style={{ color: toneColor[advice.headline.tone] }}>
+              {toneWord[advice.headline.tone]} · {sales.version.label}{sales.card.game === "onepiece" ? ` · ${sales.language === "english" ? "English" : "Japanese"}` : ""}
             </p>
-          )}
+            {advice.headline.amount != null && (
+              <p className="mt-1 text-4xl font-extrabold tabular-nums tracking-tight sm:text-5xl" style={{ color: toneColor[advice.headline.tone] }}>
+                {signed(advice.headline.amount)}
+              </p>
+            )}
+            {advice.headline.amount != null && <p className="text-sm text-[var(--muted)]">{advice.headline.label}</p>}
+            <p className="mt-3 text-base font-medium sm:text-lg">{advice.verdict}</p>
+            <a href="#why" className="mt-3 inline-block text-sm font-semibold underline">See why ↓</a>
+          </div>
 
-          {[["Same grade, different company", advice.sameGrade], ["Where a lower grade sells for more", advice.crossGrade], ["Lowest grade that makes money", advice.breakEven], ["Watch out", advice.warnings]]
-            .filter(([, lines]) => (lines as string[]).length)
-            .map(([title, lines]) => (
-              <div key={title as string}>
-                <h3 className="font-semibold">{title as string}</h3>
-                <ul className="mt-1 list-disc space-y-1 pl-5 text-sm">
-                  {(lines as string[]).map((line) => <li key={line}>{line}</li>)}
+          <div id="why" className={`${card$} scroll-mt-4 space-y-5`}>
+            <h2 className="text-lg font-bold">Why</h2>
+
+            {advice.expected.length > 0 && (
+              <div>
+                <h3 className="text-sm font-semibold uppercase tracking-wide text-[var(--muted)]">Expected profit per card, at your odds</h3>
+                <ul className="mt-2 space-y-2 text-sm">
+                  {advice.expected.map((e) => (
+                    <li key={e.company}>
+                      <span className="font-bold tabular-nums" style={{ color: e.expectedNet > 0 ? "var(--good)" : "var(--bad)" }}>{signed(e.expectedNet)}</span>
+                      {" "}with {e.company}
+                      {e.coveredPct < 100 ? <span className="text-[var(--muted)]"> · {e.coveredPct}% from its own sales</span> : ""}
+                      {e.thinPct >= 30 ? <span className="text-[var(--muted)]"> · {e.thinPct}% on grades with few sales</span> : ""}
+                      <span className="block text-xs text-[var(--muted)]">{e.used.map((u) => `${u.oddsPct}% × ${u.label} ${signed(u.net)}`).join(" + ")}</span>
+                    </li>
+                  ))}
                 </ul>
               </div>
-            ))}
+            )}
 
-          <details className="rounded-lg border border-[var(--line)] p-3">
+            {advice.outcomes.length > 0 && (
+              <div className="-mx-4 overflow-x-auto px-4 sm:mx-0 sm:px-0">
+                <table className="w-full border-collapse text-sm">
+                  <thead>
+                    <tr className="border-b border-[var(--line)] text-xs uppercase tracking-wide text-[var(--muted)]">
+                      <th className="py-2 pr-3 text-left font-semibold">Grade</th>
+                      <th className="py-2 pr-3 text-right font-semibold">Sales</th>
+                      <th className="py-2 pr-3 text-right font-semibold">Median</th>
+                      <th className="hidden py-2 pr-3 text-right font-semibold sm:table-cell">Last 30d</th>
+                      <th className="hidden py-2 pr-3 text-right font-semibold sm:table-cell">Range</th>
+                      <th className="py-2 text-right font-semibold">Profit</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {advice.outcomes.map((o) => {
+                      const profit = o.net ?? o.uplift;
+                      const move = o.recentMedian != null && o.median > 0 ? Math.round((o.recentMedian / o.median - 1) * 100) : null;
+                      return (
+                        <tr key={o.label} className="border-b border-[var(--line)] last:border-0">
+                          <td className="py-2.5 pr-3 font-semibold">{o.label}</td>
+                          <td className="py-2.5 pr-3 text-right tabular-nums whitespace-nowrap">
+                            {o.count}
+                            {o.thin && <span className="ml-1.5 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase" style={{ background: "var(--thin-soft)", color: "var(--thin)" }}>few</span>}
+                          </td>
+                          <td className="py-2.5 pr-3 text-right tabular-nums">
+                            {money(o.median)}
+                            {move != null && Math.abs(move) >= 10 && (
+                              <span className="block text-[11px] sm:hidden" style={{ color: move > 0 ? "var(--good)" : "var(--bad)" }}>30d {move > 0 ? "▲" : "▼"}{Math.abs(move)}%</span>
+                            )}
+                          </td>
+                          <td className="hidden py-2.5 pr-3 text-right tabular-nums whitespace-nowrap sm:table-cell">
+                            {o.recentMedian == null ? <span className="text-[var(--muted)]">—</span> : (
+                              <>
+                                {money(o.recentMedian)}
+                                {move != null && move !== 0 && (
+                                  <span className="ml-1 text-xs" style={{ color: Math.abs(move) >= 10 ? (move > 0 ? "var(--good)" : "var(--bad)") : "var(--muted)" }}>
+                                    {move > 0 ? "▲" : "▼"}{Math.abs(move)}%
+                                  </span>
+                                )}
+                              </>
+                            )}
+                          </td>
+                          <td className="hidden py-2.5 pr-3 text-right tabular-nums text-[var(--muted)] whitespace-nowrap sm:table-cell">{o.low === o.high ? "—" : `${money(o.low)}–${money(o.high)}`}</td>
+                          <td className="py-2.5 text-right font-bold tabular-nums whitespace-nowrap" style={{ color: profit > 0 ? "var(--good)" : "var(--bad)" }}>
+                            {signed(profit)}{o.net === null ? <span className="font-normal text-[var(--muted)]"> †</span> : ""}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+                <p className="mt-2 text-xs text-[var(--muted)]">
+                  Profit = median sold − fees − raw cost − grading cost. † = grading cost not entered. FEW = under 3 sales, so one odd sale can swing it.
+                  Last 30d compares the last 30 days with the full median. Sales over 3× or under ⅓ of the rest of their grade are left out (see Excluded).
+                </p>
+              </div>
+            )}
+
+            {span && (
+              <p className="text-sm text-[var(--muted)]">
+                Sales used run from {span.from} to {span.to} ({span.days} day{span.days === 1 ? "" : "s"}).
+                {span.days < 30 ? " eBay returns only the newest 80 listings, so for a card this busy the medians cover a short window, not 90 days." : ""}
+              </p>
+            )}
+
+            {[["Same grade, different company", advice.sameGrade], ["Where a lower grade sells for more", advice.crossGrade], ["Lowest grade that makes money", advice.breakEven], ["Watch out", advice.warnings]]
+              .filter(([, lines]) => (lines as string[]).length)
+              .map(([title, lines]) => (
+                <div key={title as string}>
+                  <h3 className="text-sm font-semibold uppercase tracking-wide text-[var(--muted)]">{title as string}</h3>
+                  <ul className="mt-1.5 list-disc space-y-1 pl-5 text-sm">
+                    {(lines as string[]).map((line) => <li key={line}>{line}</li>)}
+                  </ul>
+                </div>
+              ))}
+          </div>
+
+          <details className={card$}>
             <summary className="cursor-pointer font-semibold">Sales used ({used.length})</summary>
             <ListingList items={used} />
           </details>
-          <details className="rounded-lg border border-[var(--line)] p-3">
-            <summary className="cursor-pointer font-semibold">Excluded listings ({excluded.length}) — with reasons</summary>
+          <details className={card$}>
+            <summary className="cursor-pointer font-semibold">Excluded listings ({excluded.length}), with reasons</summary>
             <ListingList items={excluded} showReason />
           </details>
-          <p className="text-xs text-[var(--muted)]">
+          <p className="px-1 text-xs text-[var(--muted)]">
             eBay search: <a className="underline" target="_blank" rel="noreferrer"
               href={`https://www.ebay.com/sch/i.html?_nkw=${encodeURIComponent(sales.keyword)}&LH_Sold=1&LH_Complete=1`}>“{sales.keyword}”</a>
             {" "}· {sales.cached ? "cached result from" : "fetched"} {new Date(sales.fetchedAt).toLocaleString()}
-            {" "}· {sales.historyCount} listing{sales.historyCount === 1 ? "" : "s"} on record for this search
+            {" "}· {sales.historyCount} listing{sales.historyCount === 1 ? "" : "s"} on record
             {sales.budgetRemainingUsd != null ? ` · Apify budget left this month: ${money(sales.budgetRemainingUsd)}` : ""}
           </p>
         </section>
       )}
 
       {(batch.length > 0 || batchRows) && (
-        <section className="mt-10 rounded-lg border border-[var(--line)] p-4">
+        <section className={`${card$} mt-8`}>
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <h2 className="text-xl font-bold">Batch ({batch.length}/{BATCH_MAX})</h2>
+            <h2 className="text-lg font-bold">Batch <span className="font-normal text-[var(--muted)]">({batch.length}/{BATCH_MAX})</span></h2>
             <div className="flex gap-2">
               <button type="button" className={quiet} onClick={() => { setBatch([]); setBatchRows(null); }} disabled={batchRunning}>Clear</button>
               <button type="button" className={button} onClick={runBatch} disabled={batchRunning || !batch.length}>
@@ -532,7 +637,7 @@ export default function GradingTool() {
             </div>
           </div>
           <p className="mt-1 text-xs text-[var(--muted)]">One Apify run for every card not fetched in the last 12 hours. Ranked by expected profit at your odds, or by profit at a 10 if no odds are set. Raw cost per card is its TCGplayer price when known, else the raw cost above.</p>
-          {batchError && <p role="alert" className="mt-3 rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm">{batchError}</p>}
+          {batchError && <p role="alert" className="mt-3 rounded-xl px-4 py-3 text-sm" style={{ background: "var(--bad-soft)", color: "var(--bad)" }}>{batchError}</p>}
 
           {!batchRows && (
             <ul className="mt-3 space-y-1 text-sm">
@@ -562,10 +667,10 @@ export default function GradingTool() {
                       <td className="py-2 pr-3">
                         <span className="font-semibold">{entry.row.cardName}</span>
                         <span className="block text-xs text-[var(--muted)]">{entry.row.number} · {entry.row.versionLabel}{entry.row.game === "onepiece" ? ` · ${entry.row.language === "english" ? "EN" : "JP"}` : ""}</span>
-                        {!entry.row.ok && <span className="block text-xs text-red-600">{entry.row.error}</span>}
+                        {!entry.row.ok && <span className="block text-xs" style={{ color: "var(--bad)" }}>{entry.row.error}</span>}
                         {entry.advice?.warnings.length ? <span className="block text-xs text-[var(--muted)]">{entry.advice.warnings[0]}</span> : null}
                       </td>
-                      <td className={`py-2 pr-3 font-semibold tabular-nums ${entry.score > 0 ? "text-[var(--action)]" : "text-red-600"}`}>
+                      <td className="py-2 pr-3 font-bold tabular-nums" style={{ color: entry.score > 0 ? "var(--good)" : "var(--bad)" }}>
                         {Number.isFinite(entry.score) ? signed(entry.score) : "—"}
                       </td>
                       <td className="hidden py-2 pr-3 sm:table-cell">{entry.best ?? <span className="text-[var(--muted)]">no graded sales found</span>}</td>
