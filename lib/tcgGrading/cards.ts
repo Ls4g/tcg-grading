@@ -56,18 +56,35 @@ export type CardResult = {
 const POKEMON_API = "https://api.pokemontcg.io/v2";
 const OPTCG_API = "https://optcgapi.com/api";
 
+// Card data barely changes; remembering it briefly means "search, then price"
+// hits the flaky card API once, not twice.
+const CARD_CACHE_MS = 10 * 60_000;
+const cardCache = new Map<string, { at: number; value: unknown }>();
+
 async function getJson<T>(url: string): Promise<T> {
+  const hit = cardCache.get(url);
+  if (hit && Date.now() - hit.at < CARD_CACHE_MS) return hit.value as T;
+  const value = await fetchJson<T>(url);
+  if (cardCache.size > 500) cardCache.clear();
+  cardCache.set(url, { at: Date.now(), value });
+  return value;
+}
+
+async function fetchJson<T>(url: string): Promise<T> {
   const headers: Record<string, string> = { Accept: "application/json" };
   if (url.startsWith(POKEMON_API) && process.env.POKEMONTCG_API_KEY) headers["X-Api-Key"] = process.env.POKEMONTCG_API_KEY;
   let lastStatus = 0;
-  // pokemontcg.io returns the odd 500/504 under load; one retry clears most.
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    const response = await fetch(url, { headers, cache: "no-store" });
-    if (response.ok) return (await response.json()) as T;
-    lastStatus = response.status;
-    if (response.status < 500) break;
+  // pokemontcg.io fails at random under load (measured ~50% 500/502 on
+  // 17 Nov 2026, same query succeeding a second later), so retry a few
+  // times with a short, growing pause before giving up.
+  for (let attempt = 0; attempt < 7; attempt += 1) {
+    if (attempt) await new Promise((resolve) => setTimeout(resolve, 300 * attempt));
+    const response = await fetch(url, { headers, cache: "no-store" }).catch(() => null);
+    if (response?.ok) return (await response.json()) as T;
+    lastStatus = response?.status ?? 0;
+    if (response && response.status < 500) break;
   }
-  throw new Error(`Card lookup failed (HTTP ${lastStatus}).`);
+  throw new Error(`Card lookup failed (HTTP ${lastStatus}). The card database is having trouble; try again in a minute.`);
 }
 
 // ---------- Pokémon ----------
