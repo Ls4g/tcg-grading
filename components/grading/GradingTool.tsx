@@ -4,7 +4,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { adviseOn, ODDS_GRADES, oddsAreUsable, type CostInputs, type GradeOdds, type OddsGrade } from "@/lib/tcgGrading/advice";
 import { customVersion, type CardResult, type CardVersion } from "@/lib/tcgGrading/cards";
-import { PSA_FEES_AS_OF, suggestPsaTier } from "@/lib/tcgGrading/gradingFees";
+import { PSA_FEES_AS_OF, PSA_TIERS, suggestPsaTier } from "@/lib/tcgGrading/gradingFees";
 import type { Company, Game, ListingVerdict } from "@/lib/tcgGrading/listings";
 import type { PriceResult } from "@/lib/tcgGrading/price";
 
@@ -21,11 +21,16 @@ const COST_PER_LOOKUP_USD = 0.16;
 const money = (value: number) => `${value < 0 ? "−" : ""}$${Math.abs(value).toLocaleString("en-US", { minimumFractionDigits: Math.abs(value) < 100 ? 2 : 0, maximumFractionDigits: Math.abs(value) < 100 ? 2 : 0 })}`;
 const signed = (value: number) => `${value >= 0 ? "+" : "−"}${money(Math.abs(value))}`;
 
-const ODDS_PRESETS: Array<{ name: string; odds: GradeOdds }> = [
-  { name: "Pack fresh", odds: { 10: 60, 9: 30, 8: 10, 7: 0 } },
-  { name: "Looks clean", odds: { 10: 30, 9: 45, 8: 20, 7: 5 } },
-  { name: "Played", odds: { 10: 5, 9: 30, 8: 40, 7: 25 } },
+const ODDS_PRESETS: Array<{ name: string; hint: string; odds: GradeOdds }> = [
+  { name: "Pack fresh", hint: "Straight from the pack into a sleeve. Centred, no marks even under a light.", odds: { 10: 60, 9: 30, 8: 10, 7: 0 } },
+  { name: "Looks clean", hint: "No wear you can see at arm's length, but you haven't checked closely or it's slightly off-centre.", odds: { 10: 30, 9: 45, 8: 20, 7: 5 } },
+  { name: "Played", hint: "Some whitening on the edges, light scratches, or it has been in a binder or deck.", odds: { 10: 5, 9: 30, 8: 40, 7: 25 } },
 ];
+// Where to check current grading prices (we don't guess them for CGC/BGS).
+const GRADER_PRICE_LINKS: Partial<Record<Company, string>> = {
+  CGC: "https://www.cgccards.com/submit/",
+  BGS: "https://www.beckett.com/grading",
+};
 const EMPTY_ODDS: Record<OddsGrade, string> = { 10: "", 9: "", 8: "", 7: "" };
 
 function readJson<T>(key: string): T | null {
@@ -256,8 +261,8 @@ export default function GradingTool() {
     }).sort((a, b) => b.score - a.score);
   }, [batchRows, costs]);
 
-  const chip = (active: boolean) =>
-    `rounded-full border px-3.5 py-1.5 text-sm transition ${active ? "border-[var(--action)] bg-[var(--action)] text-white" : "border-[var(--line)] bg-[var(--surface)] hover:border-[var(--action)]"}`;
+  const chip = (active: boolean, wrap = false) =>
+    `${wrap ? "max-w-full text-left" : "whitespace-nowrap"} rounded-full border px-3.5 py-1.5 text-sm transition ${active ? "border-[var(--action)] bg-[var(--action)] text-white" : "border-[var(--line)] bg-[var(--surface)] hover:border-[var(--action)]"}`;
   const input = "w-full rounded-lg border border-[var(--line)] bg-[var(--surface)] px-3 py-2 text-base outline-none focus:border-[var(--action)]";
   const button = "rounded-lg bg-[var(--action)] px-5 py-2.5 font-semibold text-white shadow-sm transition hover:brightness-110 disabled:opacity-60";
   const quiet = "rounded-lg border border-[var(--line)] bg-[var(--surface)] px-4 py-2 text-sm font-semibold transition hover:border-[var(--action)] disabled:opacity-60";
@@ -277,11 +282,14 @@ export default function GradingTool() {
   const oddsEditor = (
     <div>
       <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <p className="text-sm font-semibold">What grade will it get? <span className="font-normal text-[var(--muted)]">(your odds, %)</span></p>
+        <p className="text-sm font-semibold">What condition is your card in?</p>
         <p className="text-xs" style={{ color: gradeOdds && !oddsAreUsable(gradeOdds) ? "var(--bad)" : "var(--muted)" }}>
-          {gradeOdds ? `Total ${Math.round(oddsTotal)}%${oddsAreUsable(gradeOdds) ? "" : " — needs to be 100%"}` : "Optional: gives one expected-profit number."}
+          {gradeOdds ? `Total ${Math.round(oddsTotal)}%${oddsAreUsable(gradeOdds) ? "" : " — needs to add up to 100%"}` : "Optional"}
         </p>
       </div>
+      <p className="mt-0.5 text-xs text-[var(--muted)]">
+        Pick the one that fits. It sets how likely each grade is, so the result can give you one expected profit instead of a profit per grade.
+      </p>
       <div className="mt-2 inline-flex w-full flex-wrap rounded-lg border border-[var(--line)] p-1 sm:w-auto" role="group" aria-label="Odds presets">
         {[...ODDS_PRESETS.map((p) => p.name), "Custom"].map((name) => {
           const active = name === "Custom" ? !activePreset && Boolean(gradeOdds) : activePreset === name;
@@ -291,13 +299,18 @@ export default function GradingTool() {
               onClick={() => {
                 const preset = ODDS_PRESETS.find((p) => p.name === name);
                 if (preset) setOddsText(Object.fromEntries(ODDS_GRADES.map((g) => [g, String(preset.odds[g])])) as Record<OddsGrade, string>);
-              }}>
+              }}
+              title={ODDS_PRESETS.find((p) => p.name === name)?.hint ?? "Type your own percentages below"}>
               {name}
             </button>
           );
         })}
       </div>
-      <div className="mt-2 grid grid-cols-4 gap-2">
+      <p className="mt-1.5 min-h-[1.25rem] text-xs">
+        {activePreset ? ODDS_PRESETS.find((p) => p.name === activePreset)?.hint : gradeOdds ? "Your own odds. Each box is the % chance of that grade." : ""}
+      </p>
+      <p className="mt-2 text-xs font-semibold text-[var(--muted)]">Chance of each grade (%)</p>
+      <div className="mt-1 grid grid-cols-4 gap-2">
         {ODDS_GRADES.map((grade) => (
           <label key={grade} className="text-sm">
             <span className="block text-xs text-[var(--muted)]">{grade === 7 ? "7 or lower" : `Grade ${grade}`}</span>
@@ -337,6 +350,7 @@ export default function GradingTool() {
 
       <section className={card$}>
         {step(1, "Find your card", Boolean(card))}
+        {!card && <p className="-mt-1 mb-3 text-sm text-[var(--muted)]">Choose the game, then type the card name or the number printed on it (for example OP05-119 or 4/102).</p>}
         <form onSubmit={search} className="flex flex-col gap-3 sm:flex-row sm:items-center">
           <div className="flex gap-2">
             <button type="button" className={chip(game === "pokemon")} onClick={() => { setGame("pokemon"); setCards(null); setCard(null); setSales(null); setLanguage("english"); }}>Pokémon</button>
@@ -373,6 +387,9 @@ export default function GradingTool() {
       {card && (
         <section className={`${card$} mt-4`}>
           {step(2, "Pick the exact version", Boolean(sales))}
+          <p className="-mt-1 mb-3 text-sm text-[var(--muted)]">
+            The same card number comes in versions worth very different amounts. Tap the one that matches yours and check it against the picture. The price on each is what an ungraded copy sells for.
+          </p>
           <div className="grid gap-5 sm:grid-cols-[200px_1fr]">
             <div className="flex gap-4 sm:block">
               {card.image && <img src={card.image} alt={card.name} className="w-32 shrink-0 rounded-xl shadow-md sm:w-full" />}
@@ -389,7 +406,7 @@ export default function GradingTool() {
               <p className="mt-4 text-sm font-semibold">Version</p>
               <div className="mt-2 flex flex-wrap gap-2">
                 {card.versions.map((version) => (
-                  <button key={version.key} type="button" className={chip(version.key === versionKey)} onClick={() => pickVersion(version)}>
+                  <button key={version.key} type="button" className={chip(version.key === versionKey, true)} onClick={() => pickVersion(version)}>
                     {version.label}{version.rawMarketUsd != null ? <span className="opacity-75"> · {money(version.rawMarketUsd)}</span> : ""}
                   </button>
                 ))}
@@ -438,29 +455,41 @@ export default function GradingTool() {
               <div className="min-w-0">
                 {step(3, "Your costs and odds")}
                 {!numbersOpen && <p className="-mt-1 truncate pl-10 text-sm text-[var(--muted)]">{numbersSummary}</p>}
+                {numbersOpen && <p className="-mt-1 mb-3 text-sm text-[var(--muted)]">All optional. Fill in what you know, then get prices. Empty grading costs are treated as $0, and you can change anything after the result appears.</p>}
               </div>
               <span className="mt-1 shrink-0 text-sm text-[var(--muted)] underline">{numbersOpen ? "Hide" : "Edit"}</span>
             </summary>
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
               <label className="text-sm">
-                <span className="block font-semibold">Raw card cost (USD)</span>
-                <input className={input} inputMode="decimal" value={rawCost} onChange={(e) => setRawCost(e.target.value)} placeholder="What you paid or could sell it for" />
-                <span className="text-xs text-[var(--muted)]">{selectedVersion?.rawMarketUsd != null && language === "english" ? `TCGplayer market: ${money(selectedVersion.rawMarketUsd)}` : "No raw market price for this version — enter yours."}</span>
+                <span className="block font-semibold">Ungraded value (USD)</span>
+                <input className={input} inputMode="decimal" value={rawCost} onChange={(e) => setRawCost(e.target.value)} placeholder="e.g. 25" />
+                <span className="text-xs text-[var(--muted)]">
+                  What you could sell it for as it is. Grading only pays if it beats this.{" "}
+                  {selectedVersion?.rawMarketUsd != null && language === "english" ? `Filled in from TCGplayer (${money(selectedVersion.rawMarketUsd)}).` : "No market price known for this version, so enter your own."}
+                </span>
               </label>
               <label className="text-sm">
                 <span className="block font-semibold">Selling fees %</span>
                 <input className={input} inputMode="decimal" value={sellFeePct} onChange={(e) => setSellFeePct(e.target.value)} />
-                <span className="text-xs text-[var(--muted)]">eBay + payment fees on the sale.</span>
+                <span className="text-xs text-[var(--muted)]">What eBay and payments take when you sell the slab. 13% is typical.</span>
               </label>
               {costCompanies.map((company) => (
                 <label key={company} className="text-sm">
-                  <span className="block font-semibold">{company} cost per card</span>
-                  <input className={input} inputMode="decimal" value={gradingCost[company] ?? ""} placeholder="Fee + shipping"
+                  <span className="block font-semibold">{company} grading cost</span>
+                  <input className={input} inputMode="decimal" value={gradingCost[company] ?? ""} placeholder="Fee + postage, per card"
                     onChange={(e) => setGradingCost((prev) => ({ ...prev, [company]: e.target.value }))} />
-                  {company === "PSA" && psaTier && (
+                  {company === "PSA" && (() => {
+                    const tier = psaTier ?? PSA_TIERS[0];
+                    return (
+                      <span className="text-xs text-[var(--muted)]">
+                        {psaTier ? `For this card's value, PSA's ${tier.name} tier fits` : `PSA's cheapest tier (${tier.name}, cards worth up to ${money(tier.maxDeclaredUsd)})`}: {money(tier.feeUsd)} + postage ({PSA_FEES_AS_OF} list price).{" "}
+                        <button type="button" className="underline" onClick={() => setGradingCost((prev) => ({ ...prev, PSA: String(tier.feeUsd) }))}>Use {money(tier.feeUsd)}</button>
+                      </span>
+                    );
+                  })()}
+                  {GRADER_PRICE_LINKS[company] && (
                     <span className="text-xs text-[var(--muted)]">
-                      PSA {psaTier.name} tier fits (up to {money(psaTier.maxDeclaredUsd)} value): {money(psaTier.feeUsd)} + shipping, {PSA_FEES_AS_OF} list.{" "}
-                      <button type="button" className="underline" onClick={() => setGradingCost((prev) => ({ ...prev, PSA: String(psaTier.feeUsd) }))}>Use it</button>
+                      Check today&apos;s price on <a className="underline" href={GRADER_PRICE_LINKS[company]} target="_blank" rel="noreferrer">{company}&apos;s site</a>, then add postage.
                     </span>
                   )}
                 </label>
