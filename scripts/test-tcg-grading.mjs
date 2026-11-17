@@ -156,16 +156,36 @@ assert.equal(oddsAreUsable({ 10: 60, 9: 30, 8: 10, 7: 0 }), true);
 assert.equal(oddsAreUsable({ 10: 60, 9: 30, 8: 20, 7: 0 }), false);
 const oddsCosts = { rawCost: 30, sellFeePct: 10, gradingCost: { PSA: 25, CGC: 20 }, gradeOdds: { 10: 50, 9: 40, 8: 10, 7: 0 } };
 const expected = expectedFor(outcomesFor(buckets, oddsCosts), oddsCosts);
-// PSA 10 net 44, PSA 9 net -14.5, no PSA 8: 0.5*44 + 0.4*-14.5 = 16.2, 90% covered.
+// PSA 10 net 44, PSA 9 net -14.5, PSA 8: no sales anywhere, so it sells at raw
+// value: 30*0.9-30-25 = -28. 0.5*44 + 0.4*-14.5 + 0.1*-28 = 13.4.
 const psa = expected.find((e) => e.company === "PSA");
-assert.equal(psa.expectedNet, 16.2);
+assert.equal(psa.expectedNet, 13.4);
 assert.equal(psa.coveredPct, 90);
 assert.deepEqual(psa.missingGrades, [8]);
-// CGC: plain CGC 10 missing (only Pristine), CGC 9 net 125*0.9-30-20 = 62.5 -> 0.4*62.5 = 25, 40% covered.
+assert.equal(psa.used.find((u) => u.grade === 8).source, "raw value");
+// CGC: no plain CGC 10 (only Pristine), so PSA 10 stands in: 69-20 = 49;
+// CGC 9: 62.5; 8 at raw value: -23. 0.5*49 + 0.4*62.5 + 0.1*-23 = 47.2.
 const cgc = expected.find((e) => e.company === "CGC");
-assert.equal(cgc.expectedNet, 25);
+assert.equal(cgc.expectedNet, 47.2);
 assert.equal(cgc.coveredPct, 40);
-assert.match(adviseOn(buckets, oddsCosts).verdict, /Worth grading at your odds: expected profit \$16\.20 per card with PSA/);
+assert.equal(cgc.used.find((u) => u.grade === 10).source, "other company");
+// CGC looks better but only 40% is its own data: the verdict stays on PSA and says why.
+const oddsAdvice = adviseOn(buckets, oddsCosts);
+assert.match(oddsAdvice.verdict, /Worth grading at your odds: expected profit \$13\.40 per card with PSA/);
+assert.match(oddsAdvice.warnings.join("\n"), /CGC shows a higher expected profit \(\$47\.20\)/);
+
+// Thin data must not drive the verdict (live Umbreon VMAX 215/203, 17 Nov 2026:
+// one BGS 10 at $6,100 made BGS look best while PSA had 22 PSA 10 sales).
+const thinCase = bucketByGrade([
+  judgeListing(zard([]), row("Charizard 4/102 BGS 10 Pristine", 6100)),
+  ...[3400, 3500, 3600].map((p) => judgeListing(zard([]), row("Charizard 4/102 PSA 10", p))),
+  ...[1850, 1900, 2000].map((p) => judgeListing(zard([]), row("Charizard 4/102 PSA 9", p))),
+  ...[1200, 1900, 1950].map((p) => judgeListing(zard([]), row("Charizard 4/102 PSA 8", p))),
+  ...[1500, 1600, 1800].map((p) => judgeListing(zard([]), row("Charizard 4/102 PSA 6", p))),
+]);
+const thinAdvice = adviseOn(thinCase, { rawCost: 2265, sellFeePct: 13, gradingCost: { PSA: 75, BGS: 75 }, gradeOdds: { 10: 30, 9: 45, 8: 20, 7: 5 } });
+assert.match(thinAdvice.verdict, /with PSA/);
+assert.match(thinAdvice.warnings.join("\n"), /BGS shows a higher expected profit/);
 
 assert.equal(suggestPsaTier(110)?.name, "Value");
 assert.equal(suggestPsaTier(800)?.name, "Regular");
@@ -176,7 +196,8 @@ import { customVersion, customVersionWords } from "../lib/tcgGrading/cards.ts";
 assert.deepEqual(customVersionWords("Magazine Promo"), ["magazine", "promo"]);
 const typed = customVersion("ST21-014", "Magazine Promo", "onepiece");
 assert.equal(typed.key, "ST21-014|custom:Magazine Promo");
-const luffy = { game: "onepiece", name: "Monkey.D.Luffy", number: "ST21-014", variantTags: [], language: "japanese", mustMention: typed.mustMention };
+const luffy = { game: "onepiece", name: "Monkey.D.Luffy", number: "ST21-014", variantTags: typed.variantTags, language: "japanese", mustMention: typed.mustMention };
+assert.deepEqual(typed.variantTags, ["promo"]);
 const luffyRows = [
   row("One Piece Monkey D Luffy ST21-014 Magazine Promo Japanese PSA 10", 400),
   row("One Piece Monkey D Luffy ST21-014 Japanese PSA 10", 60),
@@ -200,4 +221,34 @@ const pkCard = { ...opCard, game: "pokemon", id: "base1-4", name: "Charizard", n
 assert.equal(soldSearchKeyword({ card: pkCard, version: { key: "base1-4|1stEditionHolofoil", label: "1st Edition Holofoil", rawMarketUsd: null, variantTags: ["1st-edition"] } }),
   'Charizard 4/102 ("1st edition","first edition") (PSA,CGC,BGS)');
 
-console.log("Cert dedupe, trend, odds, PSA tiers, typed versions and search terms all pass.");
+// ---- Live run 17 Nov 2026: titles that were wrongly counted ----
+// Umbreon VMAX 215/203: German copies ("GER") counted as English.
+const umbreon = { game: "pokemon", name: "Umbreon VMAX", number: "215", printedTotal: 203, variantTags: [], language: "english" };
+assert.equal(judgeListing(umbreon, row("UMBREON VMAX POKEMON EVOLVING SKIES FA SECRET RARE GER 215/203 2021 PSA 8", 1215.17)).reason, "different language");
+assert.equal(judgeListing(umbreon, row("Pokemon 2021 Umbreon VMAX 215/203 Alt Art Evolving Skies GEM MINT PSA 10", 3400)).used, true);
+
+// OP05-119 Luffy, base version: SP, alt art, promo-set and OP09 reprints counted as base.
+const gear5 = { game: "onepiece", name: "Monkey.D.Luffy", number: "OP05-119", variantTags: [], language: "english" };
+const wrongForBase = {
+  "2025 One Piece Monkey D. Luffy Special Card Alternative Art #OP05-119 PSA 10": /different version/,
+  "2025 One Piece Monkey D. Luffy Special Card #OP05-119 PSA 9": /different version \(listing is sp\)/,
+  "One Piece 2025 Promo Monkey.D.Luffy SEC OP05-119 EN 2nd Anniversary Set BGS 9.5": /different version \(listing is promo\)/,
+  "MONKEY D. LUFFY 2025 ONE PIECE 2ND ANNIVERSARY SET OP05-119 SEC PSA 9 Q2029": /different version \(listing is promo\)/,
+  "Psa Monkey.D.Luffy OP05-119 OP09-EMPERORS IN THE New WORLD [PSA 10]": /listing names set OP09/,
+};
+for (const [title, reason] of Object.entries(wrongForBase)) assert.match(judgeListing(gear5, row(title, 100)).reason, reason, title);
+const rightForBase = [
+  "Monkey D. Luffy OP05-119 SEC Gear5 One Piece OP-05 En PSA 10 💎",
+  "PSA10 Monkey D. Luffy OP05-119 SEC Foil English 2023 One Piece TCG OG PRINT",
+  "2023 One Piece OP05-119 Monkey D. Luffy PSA 10 Gem Mint #119 Awakening New Era",
+  "One Piece 2023 Awakening New Era Monkey D. Luffy OP05-119 EN Foil PSA 9",
+];
+for (const title of rightForBase) assert.equal(judgeListing(gear5, row(title, 80)).used, true, title);
+// The promo version itself still accepts listings that never say "promo".
+const promoVersion = { ...gear5, variantTags: ["promo"] };
+assert.equal(judgeListing(promoVersion, row("One Piece 2025 Promo Monkey.D.Luffy SEC OP05-119 EN 2nd Anniversary Set BGS 9.5", 27.56)).used, true);
+// A Wanted Poster version is an OP09 reprint, so OP09 in its titles is fine.
+const wanted = { ...gear5, variantTags: ["wanted"] };
+assert.equal(judgeListing(wanted, row("2024 One Piece EN OP09 Monkey D. Luffy Wanted Poster OP05-119 PSA 10", 960)).used, true);
+
+console.log("Cert dedupe, trend, odds, PSA tiers, typed versions, search terms and live-run regressions all pass.");

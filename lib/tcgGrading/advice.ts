@@ -25,16 +25,20 @@ export type CostInputs = {
   gradeOdds?: GradeOdds | null;
 };
 
+export type ExpectedSource = "sales" | "other company" | "raw value";
+
 export type ExpectedOutcome = {
   company: Company;
-  /** Odds-weighted profit per card, over the grades that have sales data. */
+  /** Odds-weighted profit per card. Every grade with odds is filled in. */
   expectedNet: number;
-  /** How much of the odds (0-100) landed on grades with sales data. */
+  /** Share of the odds (0-100) backed by this company's own sales. */
   coveredPct: number;
-  /** Grades you gave odds to that have no sales at this company. */
+  /** Grades with no sales at this company (filled from elsewhere). */
   missingGrades: OddsGrade[];
-  /** Which bucket stood in for each odds grade. */
-  used: Array<{ grade: OddsGrade; label: string; net: number; oddsPct: number }>;
+  /** Share of the odds (0-100) resting on grades with fewer than THIN_DATA sales. */
+  thinPct: number;
+  /** What stood in for each odds grade. */
+  used: Array<{ grade: OddsGrade; label: string; net: number; oddsPct: number; source: ExpectedSource; thin: boolean }>;
 };
 
 export type BucketOutcome = GradeBucket & {
@@ -93,30 +97,56 @@ function bucketForOdds(outcomes: BucketOutcome[], company: Company, grade: OddsG
   return plain.find((o) => o.grade === grade) ?? plain.find((o) => o.grade === grade + 0.5) ?? null;
 }
 
+/** Same grade at other companies: the median of their plain-grade medians. */
+function crossCompanyProxy(outcomes: BucketOutcome[], company: Company, grade: OddsGrade): BucketOutcome | null {
+  const others = [...new Set(outcomes.map((o) => o.company))]
+    .filter((other) => other !== company)
+    .map((other) => bucketForOdds(outcomes, other, grade))
+    .filter((o): o is BucketOutcome => o !== null)
+    .sort((a, b) => a.median - b.median);
+  return others.length ? others[Math.floor((others.length - 1) / 2)] : null;
+}
+
+/**
+ * Expected profit per company. A grade with no sales at that company is NOT
+ * dropped (that hides the bad outcomes and flatters the result). It is filled
+ * from the same grade at another company, or failing that, by assuming the
+ * slab sells for the raw price: you lose the fees and the grading cost.
+ */
 export function expectedFor(outcomes: BucketOutcome[], costs: CostInputs): ExpectedOutcome[] {
   if (!oddsAreUsable(costs.gradeOdds)) return [];
   const odds = costs.gradeOdds;
+  const keep = 1 - Math.min(Math.max(costs.sellFeePct, 0), 100) / 100;
   const companies = [...new Set(outcomes.map((o) => o.company))];
   return companies
     .map((company): ExpectedOutcome => {
+      const cost = costs.gradingCost[company];
+      const gradingCost = typeof cost === "number" && Number.isFinite(cost) ? cost : 0;
       const used: ExpectedOutcome["used"] = [];
       const missingGrades: OddsGrade[] = [];
       let expectedNet = 0;
       let coveredPct = 0;
+      let thinPct = 0;
       for (const grade of ODDS_GRADES) {
         const oddsPct = odds[grade];
         if (oddsPct <= 0) continue;
-        const bucket = bucketForOdds(outcomes, company, grade);
-        if (!bucket) {
+        const own = bucketForOdds(outcomes, company, grade);
+        let entry: ExpectedOutcome["used"][number];
+        if (own) {
+          entry = { grade, label: own.label, net: own.uplift - gradingCost, oddsPct, source: "sales", thin: own.thin };
+          coveredPct += oddsPct;
+        } else {
           missingGrades.push(grade);
-          continue;
+          const proxy = crossCompanyProxy(outcomes, company, grade);
+          entry = proxy
+            ? { grade, label: `${proxy.label} (stand-in)`, net: proxy.uplift - gradingCost, oddsPct, source: "other company", thin: proxy.thin }
+            : { grade, label: `${grade === 7 ? "≤7" : grade} at raw value`, net: Math.round((costs.rawCost * keep - costs.rawCost - gradingCost) * 100) / 100, oddsPct, source: "raw value", thin: false };
         }
-        const net = bucket.net ?? bucket.uplift;
-        used.push({ grade, label: bucket.label, net, oddsPct });
-        expectedNet += (net * oddsPct) / 100;
-        coveredPct += oddsPct;
+        if (entry.thin) thinPct += oddsPct;
+        used.push(entry);
+        expectedNet += (entry.net * oddsPct) / 100;
       }
-      return { company, expectedNet: Math.round(expectedNet * 100) / 100, coveredPct: Math.round(coveredPct), missingGrades, used };
+      return { company, expectedNet: Math.round(expectedNet * 100) / 100, coveredPct: Math.round(coveredPct), missingGrades, thinPct: Math.round(thinPct), used };
     })
     .sort((a, b) => b.expectedNet - a.expectedNet);
 }
@@ -192,14 +222,24 @@ export function adviseOn(buckets: GradeBucket[], costs: CostInputs): Advice {
   const profitable = outcomes.filter((o) => value(o) > 0);
   const solid = outcomes.filter((o) => !o.thin);
   let verdict: string;
-  const bestExpected = expected.find((e) => e.coveredPct >= 50);
+  // Trust order: a company whose result rests mostly on its own, solid sales.
+  const solidExpected = expected.filter((e) => e.coveredPct >= 50 && e.thinPct < 30);
+  const bestExpected = solidExpected[0] ?? expected.filter((e) => e.coveredPct >= 50)[0] ?? expected[0];
   if (bestExpected) {
-    const others = expected.filter((e) => e !== bestExpected && e.coveredPct >= 50).map((e) => `${e.company} ${money(e.expectedNet)}`);
+    const others = expected.filter((e) => e !== bestExpected).map((e) => `${e.company} ${money(e.expectedNet)}`);
     verdict = bestExpected.expectedNet > 0
       ? `Worth grading at your odds: expected profit ${money(bestExpected.expectedNet)} per card with ${bestExpected.company}${others.length ? ` (${others.join(", ")})` : ""}.`
-      : `Not worth grading at your odds: expected ${money(bestExpected.expectedNet)} per card even with ${bestExpected.company}, the best company${others.length ? ` (${others.join(", ")})` : ""}.`;
+      : `Not worth grading at your odds: expected ${money(bestExpected.expectedNet)} per card with ${bestExpected.company}${others.length ? ` (${others.join(", ")})` : ""}.`;
+    if (!solidExpected.includes(bestExpected)) {
+      warnings.push(`The expected profit for ${bestExpected.company} rests largely on grades with fewer than ${THIN_DATA} sales or on stand-ins, so treat it as a rough guide.`);
+    }
+    const flashier = expected.find((e) => e !== bestExpected && e.expectedNet > bestExpected.expectedNet);
+    if (flashier) {
+      warnings.push(`${flashier.company} shows a higher expected profit (${money(flashier.expectedNet)}) but ${flashier.thinPct}% of your odds rest on grades with fewer than ${THIN_DATA} ${flashier.company} sales${flashier.coveredPct < 100 ? `, and ${100 - flashier.coveredPct}% on stand-ins` : ""}.`);
+    }
     if (bestExpected.coveredPct < 100) {
-      warnings.push(`${100 - bestExpected.coveredPct}% of your odds fall on grades with no ${bestExpected.company} sales (${bestExpected.missingGrades.map((g) => (g === 7 ? "7 or lower" : String(g))).join(", ")}), so the expected profit ignores them.`);
+      const filled = bestExpected.used.filter((u) => u.source !== "sales").map((u) => `${u.grade === 7 ? "7 or lower" : u.grade} → ${u.source === "raw value" ? "sells at raw price" : u.label}`);
+      warnings.push(`No ${bestExpected.company} sales at some grades you gave odds to; filled in: ${filled.join("; ")}.`);
     }
   } else if (!profitable.length) {
     verdict = `Not worth grading on current sales: no grade, at any company, beats ${money(costs.rawCost)} raw after fees${missingCosts.length === companies.length ? "" : " and grading costs"}.`;

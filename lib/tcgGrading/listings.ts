@@ -113,7 +113,7 @@ const NOT_A_GRADED_COPY: Array<[RegExp, string]> = [
   [/\b(?:miscut|misprint|error|off-?center\s+error|crimp)\b/i, "error card (separate market)"],
 ];
 
-const OTHER_LANGUAGES = /\b(?:chinese|simplified|traditional|korean|kor|german|deutsch|french|fran[cç]ais|italian|italiano|spanish|espa[nñ]ol|portuguese|thai|indonesian)\b/i;
+const OTHER_LANGUAGES = /\b(?:chinese|simplified|traditional|chn|korean|kor|german|deutsch|ger|deu|french|fran[cç]ais|fra|italian|italiano|ita|spanish|espa[nñ]ol|spa|esp|portuguese|por|thai|indonesian)\b/i;
 const JAPANESE = /\b(?:japanese|japan|jpn|jp|jap|japon)\b/i;
 const ENGLISH = /\b(?:english|eng|en)\b/i;
 
@@ -129,10 +129,13 @@ const POKEMON_TAGS: Array<[string, RegExp]> = [
 
 const ONE_PIECE_TAGS: Array<[string, RegExp]> = [
   ["manga", /\b(?:manga|comic)\b/i],
-  ["sp", /\bSP\b|\bspecial\s+(?:card|art|rare)\b/],
+  ["sp", /\bSP\b|\b[Ss]pecial\s+(?:[Cc]ard|[Aa]rt|[Rr]are)\b|\bSPECIAL\s+(?:CARD|ART|RARE)\b/],
   ["wanted", /\bwanted\b/i],
   ["prb", /\bprb\s*-?\s*0?\d\b|\bpremium\s+booster\b|\bthe\s+best\b/i],
-  ["alt-art", /\b(?:alt(?:ernate|\.)?\s*art|parallel|AA|par)\b/i],
+  ["alt-art", /\b(?:alt(?:ernate|ernative|\.)?\s*art|parallel|AA|par)\b/i],
+  // Promo / event sets. One-directional: a promo listing is excluded from a
+  // regular version, but a promo version doesn't need sellers to say "promo".
+  ["promo", /\b(?:promo(?:tion)?s?|anniversary\s+set|2nd\s+anniversary|treasure\s+campaign)\b/i],
   ["foil-variant", /\b(?:jolly\s+roger|pirate\s+foil|textured|full\s+art|box\s+topper|treasure|gold(?!\s*label)|silver|spr|tr)\b/i],
 ];
 
@@ -186,6 +189,26 @@ function toNumber(value: string | number | null | undefined) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
+// Tags a version can have without sellers saying so (see "promo" above).
+const ONE_WAY_TAGS = new Set(["promo"]);
+
+/**
+ * A One Piece set code in the title other than the card's own (OP09 on an
+ * OP05 card) means a reprint in that set, e.g. Wanted Poster / SP reprints.
+ * Skipped for versions that ARE those reprints; PRB is handled by its tag.
+ */
+function otherSetCode(target: CardTarget, title: string): string | null {
+  if (target.variantTags.some((tag) => tag === "wanted" || tag === "sp" || tag === "promo")) return null;
+  const own = /^([A-Z]+)(\d+)-/i.exec(target.number);
+  if (!own) return null;
+  const ownSet = `${own[1].toUpperCase()}${Number(own[2])}`;
+  for (const match of title.matchAll(/\b(OP|EB|ST)\s*-?\s*0*(\d{1,2})(?!\s*-\s*\d{3}|\d)/gi)) {
+    const code = `${match[1].toUpperCase()}${Number(match[2])}`;
+    if (code !== ownSet) return `${match[1].toUpperCase()}${match[2].padStart(2, "0")}`;
+  }
+  return null;
+}
+
 export function judgeListing(target: CardTarget, row: SoldRow): ListingVerdict {
   const title = (row.title ?? "").trim();
   const price = toNumber(row.soldPrice);
@@ -226,8 +249,10 @@ export function judgeListing(target: CardTarget, row: SoldRow): ListingVerdict {
   if (target.language === "japanese" && !JAPANESE.test(title)) return reject("not marked as Japanese");
 
   const tags = variantTagsIn(target.game, title);
-  const missing = target.variantTags.filter((tag) => !tags.includes(tag));
+  const missing = target.variantTags.filter((tag) => !tags.includes(tag) && !ONE_WAY_TAGS.has(tag));
   const extra = tags.filter((tag) => !target.variantTags.includes(tag));
+  const otherSet = target.game === "onepiece" ? otherSetCode(target, title) : null;
+  if (otherSet) return reject(`different version (listing names set ${otherSet}, a reprint or promo set)`);
   if (missing.length || extra.length) {
     const parts = [
       extra.length ? `listing is ${extra.join(", ")}` : "",

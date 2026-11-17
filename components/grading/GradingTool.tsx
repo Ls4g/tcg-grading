@@ -212,8 +212,15 @@ export default function GradingTool() {
 
   const advice = useMemo(() => (sales ? adviseOn(sales.buckets, costs) : null), [sales, costs]);
   const companies = useMemo(() => [...new Set(sales?.buckets.map((b) => b.company) ?? [])], [sales]);
-  const used = sales?.listings.filter((l) => l.used) ?? [];
+  const used = useMemo(() => sales?.listings.filter((l) => l.used) ?? [], [sales]);
   const excluded = sales?.listings.filter((l) => !l.used) ?? [];
+  // eBay returns the newest 40 only; for a popular card that can be days, not 90.
+  const span = useMemo(() => {
+    const dates = used.map((l) => l.soldDate).filter((d): d is string => Boolean(d)).sort();
+    if (dates.length < 2) return null;
+    const days = Math.max(1, Math.round((Date.parse(dates[dates.length - 1]) - Date.parse(dates[0])) / 86_400_000));
+    return { from: dates[0], to: dates[dates.length - 1], days };
+  }, [used]);
 
   // PSA tier from the best plain-10 sale price (what you'd declare).
   const psaTier = useMemo(() => {
@@ -426,7 +433,8 @@ export default function GradingTool() {
                   <li key={e.company}>
                     <span className={`font-semibold tabular-nums ${e.expectedNet > 0 ? "text-[var(--action)]" : "text-red-600"}`}>{signed(e.expectedNet)}</span>
                     {" "}with {e.company}
-                    {e.coveredPct < 100 ? <span className="text-[var(--muted)]"> · covers {e.coveredPct}% of your odds (no sales at {e.missingGrades.map((g) => (g === 7 ? "≤7" : g)).join(", ")})</span> : ""}
+                    {e.coveredPct < 100 ? <span className="text-[var(--muted)]"> · {e.coveredPct}% from its own sales; no {e.company} sales at {e.missingGrades.map((g) => (g === 7 ? "≤7" : g)).join(", ")}</span> : ""}
+                    {e.thinPct >= 30 ? <span className="text-[var(--muted)]"> · {e.thinPct}% rests on grades with under 3 sales</span> : ""}
                     <span className="block text-xs text-[var(--muted)]">{e.used.map((u) => `${u.oddsPct}% × ${u.label} ${signed(u.net)}`).join(" + ")}</span>
                   </li>
                 ))}
@@ -474,6 +482,13 @@ export default function GradingTool() {
               </table>
               <p className="mt-1 text-xs text-[var(--muted)]">Profit = median sold − fees − raw cost − grading cost. † = grading cost not entered yet. Last 30d = median of sales in the last 30 days, and how far it sits from the 90-day median.</p>
             </div>
+          )}
+
+          {span && (
+            <p className="text-sm text-[var(--muted)]">
+              Sales used run from {span.from} to {span.to} ({span.days} day{span.days === 1 ? "" : "s"}).
+              {span.days < 30 ? " eBay only returns the newest 40 listings, so for a card this busy the medians cover a short window, not 90 days." : ""}
+            </p>
           )}
 
           {[["Same grade, different company", advice.sameGrade], ["Where a lower grade sells for more", advice.crossGrade], ["Lowest grade that makes money", advice.breakEven], ["Watch out", advice.warnings]]
