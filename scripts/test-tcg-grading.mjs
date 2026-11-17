@@ -251,4 +251,37 @@ assert.equal(judgeListing(promoVersion, row("One Piece 2025 Promo Monkey.D.Luffy
 const wanted = { ...gear5, variantTags: ["wanted"] };
 assert.equal(judgeListing(wanted, row("2024 One Piece EN OP09 Monkey D. Luffy Wanted Poster OP05-119 PSA 10", 960)).used, true);
 
-console.log("Cert dedupe, trend, odds, PSA tiers, typed versions, search terms and live-run regressions all pass.");
+// ---- CompSniper rows (shapes from the live run, 17 Nov 2026) ----
+import { toSoldRow, GRADING_MAX_CHARGE_USD, GRADING_RESULTS } from "../lib/tcgGrading/soldSearch.ts";
+import { dropPriceOutliers } from "../lib/tcgGrading/listings.ts";
+assert.equal(GRADING_RESULTS, 80);
+assert.equal(GRADING_MAX_CHARGE_USD, 0.18);
+const csBase = { itemId: "1", title: "Umbreon VMAX PSA 8 Evolving Skies 215/203 Holo Secret Rare Alt Art", url: "https://www.ebay.com/itm/1", endedAt: "2026-11-12", soldCurrency: "USD", thumbnailUrl: "https://i.ebayimg.com/images/g/x/s-l500.jpg" };
+// Accepted offer with a found price: that price is used, not the asking price.
+const paidRow = toSoldRow({ ...csBase, soldPrice: "1895.00", bestOfferAccepted: true, acceptedOfferPrice: "1825.00", acceptedOfferPriceStatus: "found" });
+const paidVerdict = judgeListing(umbreon, paidRow);
+assert.equal(paidVerdict.used, true);
+assert.equal(paidVerdict.price, 1825);
+assert.equal(paidVerdict.bestOffer, true);
+assert.equal(paidVerdict.imageUrl, csBase.thumbnailUrl);
+// Accepted offer, price not found or still pending: excluded with the reason.
+for (const status of ["not_available", "pending"]) {
+  const hidden = judgeListing(umbreon, toSoldRow({ ...csBase, soldPrice: "1649.99", bestOfferAccepted: true, acceptedOfferPrice: null, acceptedOfferPriceStatus: status }));
+  assert.match(hidden.reason, /best offer accepted; the real price paid is hidden/);
+}
+// Plain sale.
+assert.equal(judgeListing(umbreon, toSoldRow({ ...csBase, soldPrice: "1840.00", bestOfferAccepted: null })).price, 1840);
+
+// Outliers: the real OP05-119 base PSA 10 set from CompSniper. $381.60 has no
+// version word in its title but is ~6× the rest (an unlabelled alt art).
+const baseTens = [85, 89.27, 53, 60, 59, 36.68, 61, 381.6, 125.27].map((p, i) =>
+  judgeListing(gear5, row(`One Piece 2023 Monkey D. Luffy OP05-119 Awakening of the New Era PSA 10 #${i}`, p)));
+const cleaned = dropPriceOutliers(baseTens);
+assert.deepEqual(cleaned.filter((v) => !v.used).map((v) => v.price), [381.6]);
+assert.match(cleaned.find((v) => v.price === 381.6).reason, /over 3× the other PSA 10 sales/);
+// Under 4 sales in a grade: nothing is judged an outlier.
+assert.equal(dropPriceOutliers(baseTens.slice(5, 8)).every((v) => v.used), true);
+// Low outliers too.
+assert.match(dropPriceOutliers([...baseTens.slice(0, 5), judgeListing(gear5, row("One Piece Monkey D. Luffy OP05-119 PSA 10 low", 9))]).find((v) => v.price === 9).reason, /under a third/);
+
+console.log("Cert dedupe, trend, odds, PSA tiers, typed versions, search terms, live-run regressions, CompSniper rows and outliers all pass.");

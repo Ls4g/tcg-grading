@@ -25,7 +25,7 @@ Every listing used, and every listing excluded (with its reason and link), is sh
 
 ## Cost
 
-Each new card lookup is one capped Apify run (40 results, $0.20 ceiling, about $0.16 typical). Repeat lookups of the same card within 12 hours are served from an in-memory cache. Runs are refused when the Apify account has less than $0.70 left of its monthly limit.
+Each new card lookup is one capped Apify run of the CompSniper eBay sold-listings actor: up to 80 sold listings at $0.002 each (so at most $0.16, with an $0.18 ceiling), including the real accepted Best Offer price where it can be found. Repeat lookups of the same card within 12 hours are served from the store. Runs are refused when the Apify account has less than $0.50 plus the run's ceiling left of its monthly limit.
 
 ## Checks
 
@@ -36,4 +36,4 @@ To look at the results UI without spending Apify credit, `node --experimental-st
 ## Data sources
 
 - Cards and raw prices: api.pokemontcg.io, optcgapi.com (TCGplayer market prices)
-- Graded sold listings: eBay.com via the Apify actor `caffein.dev/ebay-sold-listings`
+- Graded sold listings: eBay.com via the Apify actor `compsniper/compsniper-ebay-sold-listings` (switched from `caffein.dev/ebay-sold-listings` on 17 Nov 2026 after a side-by-side test)

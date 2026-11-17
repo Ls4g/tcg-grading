@@ -25,6 +25,11 @@ export type SoldRow = {
   soldPriceMax?: string | number | null;
   soldCurrency?: string | null;
   isBestOfferAccepted?: boolean | null;
+  /** Listing photo, so a person can spot a mislabelled version. */
+  imageUrl?: string | null;
+  /** Set when soldPrice is the accepted Best Offer, not the asking price. */
+  bestOfferPaid?: boolean | null;
+  askingPrice?: string | number | null;
 };
 
 /** What the listing has to match. Built server-side from the card record. */
@@ -52,6 +57,9 @@ export type ListingVerdict = {
   grade: Grade | null;
   /** Slab certification number when the title shows one. */
   cert: string | null;
+  imageUrl: string | null;
+  /** True when price is the accepted Best Offer (asking price was higher). */
+  bestOffer: boolean;
   used: boolean;
   reason: string;
 };
@@ -219,6 +227,8 @@ export function judgeListing(target: CardTarget, row: SoldRow): ListingVerdict {
     price,
     grade: parseGrade(title),
     cert: parseCert(title),
+    imageUrl: row.imageUrl ?? null,
+    bestOffer: Boolean(row.bestOfferPaid),
   };
   const reject = (reason: string): ListingVerdict => ({ ...base, used: false, reason });
 
@@ -278,6 +288,30 @@ export function dropRepeatSlabs(verdicts: ListingVerdict[]): ListingVerdict[] {
   return verdicts.map((verdict) => {
     if (!verdict.used || !verdict.cert || latest.get(verdict.cert) === verdict) return verdict;
     return { ...verdict, used: false, reason: `same slab (cert ${verdict.cert}) sold again later; counted once` };
+  });
+}
+
+/**
+ * A price far from the rest of its grade usually means a different version
+ * the title doesn't name (an unlabelled alt art among base copies), so it is
+ * kept visible but left out of the median. Needs 4+ sales in the grade.
+ */
+export const OUTLIER_FACTOR = 3;
+
+export function dropPriceOutliers(verdicts: ListingVerdict[]): ListingVerdict[] {
+  const byGrade = new Map<string, number[]>();
+  for (const v of verdicts) {
+    if (!v.used || !v.grade || v.price === null) continue;
+    byGrade.set(v.grade.label, [...(byGrade.get(v.grade.label) ?? []), v.price]);
+  }
+  const medians = new Map([...byGrade].filter(([, prices]) => prices.length >= 4).map(([label, prices]) => [label, median(prices)]));
+  return verdicts.map((v) => {
+    if (!v.used || !v.grade || v.price === null) return v;
+    const mid = medians.get(v.grade.label);
+    if (mid === undefined) return v;
+    if (v.price > mid * OUTLIER_FACTOR) return { ...v, used: false, reason: `price is over ${OUTLIER_FACTOR}× the other ${v.grade.label} sales; the title may hide a different version` };
+    if (v.price < mid / OUTLIER_FACTOR) return { ...v, used: false, reason: `price is under a third of the other ${v.grade.label} sales; may be damaged, a different version or a mislabelled lot` };
+    return v;
   });
 }
 

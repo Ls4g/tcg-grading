@@ -2,7 +2,7 @@
 // Shared by the single-card and batch routes so both return the same shape.
 
 import { resolveVersion, soldSearchKeyword, targetFor, type ResolvedVersion } from "./cards.ts";
-import { bucketByGrade, dropRepeatSlabs, judgeListing, type GradeBucket, type ListingVerdict } from "./listings.ts";
+import { bucketByGrade, dropPriceOutliers, dropRepeatSlabs, judgeListing, type GradeBucket, type ListingVerdict } from "./listings.ts";
 import { GRADING_SEARCH_DAYS, type SoldSearchOutcome } from "./soldSearch.ts";
 
 export type Language = "english" | "japanese";
@@ -45,13 +45,13 @@ export function priceResult(resolved: ResolvedVersion, language: Language, keywo
   // Judge the full history, not just the latest fetch, so nothing seen once is
   // lost. Prices older than the search window are shown but not counted.
   const since = new Date(Date.now() - GRADING_SEARCH_DAYS * 86_400_000).toISOString().slice(0, 10);
-  const listings = dropRepeatSlabs(search.history.map((row) => {
+  const listings = dropPriceOutliers(dropRepeatSlabs(search.history.map((row) => {
     const verdict = judgeListing(target, row);
     if (verdict.used && verdict.soldDate && verdict.soldDate < since) {
       return { ...verdict, used: false, reason: `older than ${GRADING_SEARCH_DAYS} days (kept in history)` };
     }
     return verdict;
-  }));
+  })));
   return {
     card: resolved.card,
     version: resolved.version,

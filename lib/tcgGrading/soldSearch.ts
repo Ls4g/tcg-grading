@@ -1,6 +1,6 @@
 // Fetching eBay sold listings for one or more cards through Apify.
 //
-// This spends real money (about $0.004 per listing returned), so every run is
+// This spends real money ($0.002 per listing returned), so every run is
 // capped by item count AND a dollar ceiling, refuses to start when the monthly
 // budget is nearly gone, and every result is saved:
 //
@@ -9,12 +9,13 @@
 //
 // The history is the point. eBay only shows 90 days; this keeps growing.
 
-import { APIFY_SOLD_ACTOR, hasSearchReserve, readApifyBudget, type ApifyBudget } from "../apifyBudget.ts";
+import { APIFY_SOLD_ACTOR, APIFY_USD_PER_LISTING, hasSearchReserve, readApifyBudget, type ApifyBudget } from "../apifyBudget.ts";
 import { keyFor, readJson, writeJson } from "../store.ts";
 import type { SoldRow } from "./listings.ts";
 
-export const GRADING_RESULTS = 40;
-export const GRADING_MAX_CHARGE_USD = 0.2;
+export const GRADING_RESULTS = 80;
+/** Ceiling per keyword: every listing at $0.002, plus 10% headroom. */
+export const GRADING_MAX_CHARGE_USD = Math.round(GRADING_RESULTS * APIFY_USD_PER_LISTING * 1.1 * 100) / 100;
 export const GRADING_SEARCH_DAYS = 90;
 export const CACHE_HOURS = 12;
 /** Cards per paid batch run. Keeps one run's ceiling at $2. */
@@ -56,23 +57,53 @@ async function readHistory(keyword: string): Promise<SoldRow[]> {
 
 function runBody(keywords: string[]) {
   return {
-    categoryId: "0",
-    count: GRADING_RESULTS,
-    daysToScrape: GRADING_SEARCH_DAYS,
-    ebaySite: "ebay.com",
-    includeCompletedListings: false,
-    itemCondition: "any",
-    itemLocation: "default",
     keywords,
-    sortOrder: "endedRecently",
-    subcategoryId: "",
-    buyingFormat: "all",
+    mode: "recent",
+    count: GRADING_RESULTS,
+    ebaySite: "ebay.com",
+    itemCondition: "any",
+    // Our own rules decide what counts; the actor's AI cleaning could drop
+    // exactly the variant titles we need to see and explain.
+    relevance: false,
+    bestOfferPrice: true,
   };
+}
+
+type ActorRow = SoldRow & {
+  keyword?: string | null;
+  bestOfferAccepted?: boolean | null;
+  acceptedOfferPrice?: string | number | null;
+  acceptedOfferPriceStatus?: string | null;
+  thumbnailUrl?: string | null;
+};
+
+/**
+ * CompSniper row -> our SoldRow. For a Best Offer sale the listed price is
+ * the asking price, not what was paid: use the accepted offer when the actor
+ * found it, otherwise keep the row marked so it is excluded with a reason.
+ */
+export function toSoldRow(row: ActorRow): SoldRow {
+  const base: SoldRow = {
+    itemId: row.itemId ?? null,
+    title: row.title ?? null,
+    url: row.url ?? null,
+    endedAt: row.endedAt ?? null,
+    soldPrice: row.soldPrice ?? null,
+    soldCurrency: row.soldCurrency ?? null,
+    imageUrl: row.thumbnailUrl ?? null,
+  };
+  if (!row.bestOfferAccepted) return base;
+  const paid = row.acceptedOfferPrice;
+  const paidNumber = paid === null || paid === undefined || paid === "" ? NaN : Number(paid);
+  if (Number.isFinite(paidNumber) && paidNumber > 0) {
+    return { ...base, soldPrice: paidNumber, askingPrice: row.soldPrice ?? null, bestOfferPaid: true };
+  }
+  return { ...base, isBestOfferAccepted: true };
 }
 
 export function gradingRunUrl(keywordCount = 1) {
   const url = new URL(`https://api.apify.com/v2/acts/${APIFY_SOLD_ACTOR}/run-sync-get-dataset-items`);
-  url.searchParams.set("timeout", String(Math.min(150 + 60 * (keywordCount - 1), 300)));
+  url.searchParams.set("timeout", String(Math.min(180 + 30 * (keywordCount - 1), 290)));
   url.searchParams.set("maxItems", String(GRADING_RESULTS * keywordCount));
   url.searchParams.set("maxTotalChargeUsd", (GRADING_MAX_CHARGE_USD * keywordCount).toFixed(2));
   url.searchParams.set("restartOnError", "false");
@@ -88,13 +119,13 @@ async function runSearch(token: string, keywords: string[]): Promise<Map<string,
     body: JSON.stringify(runBody(keywords)),
   });
   if (!response.ok) throw new Error(`The eBay sold-listing search failed (HTTP ${response.status}).`);
-  const rows = (await response.json()) as Array<SoldRow & { keyword?: string | null }>;
+  const rows = (await response.json()) as ActorRow[];
   if (!Array.isArray(rows)) throw new Error("The sold-listing search returned an unexpected response.");
   const byKeyword = new Map<string, SoldRow[]>(keywords.map((keyword) => [keyword, []]));
   for (const row of rows) {
     const keyword = row.keyword ?? (keywords.length === 1 ? keywords[0] : null);
     const list = keyword ? byKeyword.get(keyword) : undefined;
-    if (list && list.length < GRADING_RESULTS) list.push(row);
+    if (list && list.length < GRADING_RESULTS) list.push(toSoldRow(row));
   }
   return byKeyword;
 }

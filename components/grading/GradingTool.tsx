@@ -385,7 +385,7 @@ export default function GradingTool() {
                 {inBatch ? "In batch ✓" : batch.length >= BATCH_MAX ? `Batch full (${BATCH_MAX})` : "+ Add to batch"}
               </button>
             </div>
-            <p className="mt-1 text-xs text-[var(--muted)]">Searches the last 90 days of eBay.com sold listings. Each new search uses about {money(COST_PER_LOOKUP_USD)} of the Apify budget; repeat lookups within 12 hours are free.</p>
+            <p className="mt-1 text-xs text-[var(--muted)]">Searches up to 80 eBay.com sold listings from the last 90 days, with the real price of accepted offers where known. Each new search uses up to {money(COST_PER_LOOKUP_USD)} of the Apify budget; repeat lookups within 12 hours are free.</p>
           </div>
         </section>
       )}
@@ -480,7 +480,7 @@ export default function GradingTool() {
                   })}
                 </tbody>
               </table>
-              <p className="mt-1 text-xs text-[var(--muted)]">Profit = median sold − fees − raw cost − grading cost. † = grading cost not entered yet. Last 30d = median of sales in the last 30 days, and how far it sits from the 90-day median.</p>
+              <p className="mt-1 text-xs text-[var(--muted)]">Profit = median sold − fees − raw cost − grading cost. † = grading cost not entered yet. Sales priced over 3× or under ⅓ of the rest of their grade are left out (see Excluded). Last 30d = median of sales in the last 30 days, and how far it sits from the 90-day median.</p>
             </div>
           )}
 
@@ -595,13 +595,23 @@ export default function GradingTool() {
 function ListingList({ items, showReason = false }: { items: ListingVerdict[]; showReason?: boolean }) {
   if (!items.length) return <p className="mt-2 text-sm text-[var(--muted)]">None.</p>;
   return (
-    <ul className="mt-2 space-y-2 text-sm">
+    <ul className="mt-2 space-y-3 text-sm">
       {items.map((item, index) => (
-        <li key={`${item.url}-${index}`} className="break-words">
-          <span className="font-semibold tabular-nums">{item.price != null ? money(item.price) : "—"}</span>
-          {item.grade ? ` · ${item.grade.label}` : ""}{item.soldDate ? ` · ${item.soldDate}` : ""}{item.cert ? ` · cert ${item.cert}` : ""} ·{" "}
-          {item.url ? <a href={item.url} target="_blank" rel="noreferrer" className="underline">{item.title}</a> : item.title}
-          {showReason && <span className="block text-xs text-[var(--muted)]">Excluded: {item.reason}</span>}
+        <li key={`${item.url}-${index}`} className="flex gap-3">
+          {item.imageUrl ? (
+            <a href={item.imageUrl.replace(/s-l\d+\./, "s-l1600.")} target="_blank" rel="noreferrer" className="shrink-0" aria-label="Open listing photo">
+              <img src={item.imageUrl} alt="" loading="lazy" className="h-16 w-12 rounded border border-[var(--line)] object-cover" />
+            </a>
+          ) : (
+            <span className="h-16 w-12 shrink-0 rounded border border-dashed border-[var(--line)]" aria-hidden="true" />
+          )}
+          <span className="min-w-0 break-words">
+            <span className="font-semibold tabular-nums">{item.price != null ? money(item.price) : "—"}</span>
+            {item.bestOffer ? <span className="text-xs text-[var(--muted)]"> (accepted offer)</span> : ""}
+            {item.grade ? ` · ${item.grade.label}` : ""}{item.soldDate ? ` · ${item.soldDate}` : ""}{item.cert ? ` · cert ${item.cert}` : ""} ·{" "}
+            {item.url ? <a href={item.url} target="_blank" rel="noreferrer" className="underline">{item.title}</a> : item.title}
+            {showReason && <span className="block text-xs text-[var(--muted)]">Excluded: {item.reason}</span>}
+          </span>
         </li>
       ))}
     </ul>

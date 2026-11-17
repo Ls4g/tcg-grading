@@ -1,8 +1,12 @@
 // Apify account helpers: which actor to run and whether there is budget left.
 
-// caffein.dev/ebay-sold-listings. Its `sold` flag only echoes the search
-// filter, so a returned row is a sold-listing search hit, not proof of sale.
-export const APIFY_SOLD_ACTOR = "oTtB3VgfuE9GtxQt2";
+// compsniper/compsniper-ebay-sold-listings: up to 240 sold listings per
+// keyword, $0.002 per listing returned, with the real accepted Best Offer
+// price where it can find it. Replaced caffein.dev/ebay-sold-listings on
+// 17 Nov 2026 after a side-by-side test (Umbreon VMAX 215/203: 65 usable
+// sales vs 39 for the same spend).
+export const APIFY_SOLD_ACTOR = "compsniper~compsniper-ebay-sold-listings";
+export const APIFY_USD_PER_LISTING = 0.002;
 
 // Refuse to start a run when less than this is left on the account. A run that
 // begins and cannot finish still charges for what it fetched.
