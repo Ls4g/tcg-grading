@@ -21,7 +21,7 @@ const rows = [
 ];
 const [card] = (await searchCards("onepiece", "OP01-120")).filter((c) => c.id === "OP01-120");
 const version = card.versions.find((v) => v.label === "Parallel")!;
-const result = priceResult({ card, version }, "english", "Shanks OP01-120 (PSA,CGC,BGS,SGC,TAG)", {
+const result = priceResult({ card, version }, "english", "Shanks OP01-120 PSA,CGC,BGS", {
   rows, history: rows, fetchedAt: new Date().toISOString(), cached: false, budget: { usedUsd: 2, maxUsd: 5, remainingUsd: 3 },
 });
 console.log(JSON.stringify(result));

@@ -192,12 +192,12 @@ const opCard = { game: "onepiece", id: "ST21-014", name: "Monkey.D.Luffy", numbe
 const base = { key: "ST21-014|ST21-014", label: "Base", rawMarketUsd: 10.5, variantTags: [] };
 const parallel = { key: "ST21-014|ST21-014_p1", label: "Parallel", rawMarketUsd: 30.41, variantTags: ["alt-art"] };
 const promo = { key: "ST21-014|promo:ST21-014", label: "3rd Anniversary Treasure Campaign Pack (Promo)", rawMarketUsd: 1720.22, variantTags: ["foil-variant"] };
-assert.equal(soldSearchKeyword({ card: opCard, version: base }), "Monkey.D.Luffy ST21-014 (PSA,CGC,BGS,SGC,TAG)");
-assert.equal(soldSearchKeyword({ card: opCard, version: parallel }), 'Monkey.D.Luffy ST21-014 (parallel,"alt art","alternate art") (PSA,CGC,BGS,SGC,TAG)');
-assert.equal(soldSearchKeyword({ card: opCard, version: promo }), "Monkey.D.Luffy ST21-014 (3rd,anniversary,treasure) (PSA,CGC,BGS,SGC,TAG)");
-assert.equal(soldSearchKeyword({ card: opCard, version: typed }, "japanese"), "Monkey.D.Luffy ST21-014 magazine promo japanese (PSA,CGC,BGS,SGC,TAG)");
+assert.equal(soldSearchKeyword({ card: opCard, version: base }), "Monkey.D.Luffy ST21-014 PSA,CGC,BGS");
+assert.equal(soldSearchKeyword({ card: opCard, version: parallel }), 'Monkey.D.Luffy ST21-014 parallel,"alt art","alternate art" PSA,CGC,BGS');
+assert.equal(soldSearchKeyword({ card: opCard, version: promo }), "Monkey.D.Luffy ST21-014 3rd,anniversary,treasure PSA,CGC,BGS");
+assert.equal(soldSearchKeyword({ card: opCard, version: typed }, "japanese"), "Monkey.D.Luffy ST21-014 magazine promo japanese PSA,CGC,BGS");
 const pkCard = { ...opCard, game: "pokemon", id: "base1-4", name: "Charizard", number: "4/102" };
 assert.equal(soldSearchKeyword({ card: pkCard, version: { key: "base1-4|1stEditionHolofoil", label: "1st Edition Holofoil", rawMarketUsd: null, variantTags: ["1st-edition"] } }),
-  'Charizard 4/102 ("1st edition","first edition") (PSA,CGC,BGS,SGC,TAG)');
+  'Charizard 4/102 "1st edition","first edition" PSA,CGC,BGS');
 
 console.log("Cert dedupe, trend, odds, PSA tiers, typed versions and search terms all pass.");
