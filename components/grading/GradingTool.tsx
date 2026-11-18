@@ -16,6 +16,7 @@ const COST_STORAGE_KEY = "tcg-grading-costs";
 const ODDS_STORAGE_KEY = "tcg-grading-odds";
 const BATCH_STORAGE_KEY = "tcg-grading-batch";
 const BATCH_MAX = 10;
+const TILE_LIMIT = 40;
 const COST_PER_LOOKUP_USD = 0.16;
 
 const money = (value: number) => `${value < 0 ? "−" : ""}$${Math.abs(value).toLocaleString("en-US", { minimumFractionDigits: Math.abs(value) < 100 ? 2 : 0, maximumFractionDigits: Math.abs(value) < 100 ? 2 : 0 })}`;
@@ -130,15 +131,14 @@ export default function GradingTool() {
     }
   }
 
-  function pickCard(next: CardResult) {
+  function pickCard(next: CardResult, version: CardVersion | undefined = next.versions[0]) {
     setCard(next);
     setSales(null);
     setError("");
     setCustomOpen(false);
     setCustomText("");
-    const first = next.versions[0];
-    setVersionKey(first?.key ?? "");
-    setRawCost(first?.rawMarketUsd != null ? String(first.rawMarketUsd) : "");
+    setVersionKey(version?.key ?? "");
+    setRawCost(version?.rawMarketUsd != null && language === "english" ? String(version.rawMarketUsd) : "");
   }
 
   function pickVersion(version: CardVersion) {
@@ -183,6 +183,13 @@ export default function GradingTool() {
       setPricing(false);
     }
   }
+
+  // One Piece versions have their own artwork (parallel, promo...), so each
+  // gets its own tile; Pokémon prints share one image, so one tile per card.
+  const resultTiles = useMemo(() => (cards ?? []).flatMap((item) =>
+    item.versions.some((v) => v.image)
+      ? item.versions.map((version) => ({ item, version }))
+      : [{ item, version: null as CardVersion | null }]), [cards]);
 
   const selectedVersion = card?.versions.find((v) => v.key === versionKey) ?? (typedVersion?.key === versionKey ? typedVersion : null);
   const inBatch = batch.some((item) => item.versionKey === versionKey && item.language === language);
@@ -366,17 +373,27 @@ export default function GradingTool() {
             {cards.length === 0 ? (
               <p className="text-[var(--muted)]">No cards found. Try just the name, or the card number.</p>
             ) : (
-              <ul className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-                {cards.map((item) => (
-                  <li key={`${item.game}-${item.id}`}>
-                    <button type="button" onClick={() => pickCard(item)} className="w-full rounded-xl border border-[var(--line)] p-2 text-left transition hover:border-[var(--action)] hover:shadow-sm">
-                      {item.image && <img src={item.image} alt="" loading="lazy" className="mx-auto aspect-[63/88] w-full rounded-lg object-contain" />}
-                      <span className="mt-2 block text-sm font-semibold leading-tight">{item.name}</span>
-                      <span className="block text-xs text-[var(--muted)]">{item.number} · {item.setName}</span>
-                    </button>
-                  </li>
-                ))}
-              </ul>
+              <>
+                <p className="mb-2 text-sm text-[var(--muted)]">
+                  {resultTiles.length > TILE_LIMIT
+                    ? `Showing ${TILE_LIMIT} of ${resultTiles.length}. Type the number printed on your card (e.g. OP05-119) to see just its versions.`
+                    : `${resultTiles.length} result${resultTiles.length === 1 ? "" : "s"}. Tap the one that looks like your card.`}
+                </p>
+                <ul className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                  {resultTiles.slice(0, TILE_LIMIT).map(({ item, version }) => (
+                    <li key={`${item.game}-${version?.key ?? item.id}`}>
+                      <button type="button" onClick={() => pickCard(item, version ?? undefined)} className="h-full w-full rounded-xl border border-[var(--line)] p-2 text-left transition hover:border-[var(--action)] hover:shadow-sm">
+                        {(version?.image ?? item.image) && <img src={(version?.image ?? item.image) as string} alt="" loading="lazy" className="mx-auto aspect-[63/88] w-full rounded-lg object-contain" />}
+                        <span className="mt-2 block text-sm font-semibold leading-tight">{item.name}</span>
+                        {version && <span className="block text-xs font-semibold leading-snug" style={{ color: "var(--action)" }}>{version.label}</span>}
+                        <span className="block text-xs text-[var(--muted)]">{item.number} · {item.setName}</span>
+                        {version?.rawMarketUsd != null && <span className="block text-xs tabular-nums text-[var(--muted)]">{money(version.rawMarketUsd)} ungraded</span>}
+                        {!version && item.versions.length > 1 && <span className="block text-xs text-[var(--muted)]">{item.versions.length} versions</span>}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </>
             )}
           </div>
         )}
@@ -392,7 +409,7 @@ export default function GradingTool() {
           </p>
           <div className="grid gap-5 sm:grid-cols-[200px_1fr]">
             <div className="flex gap-4 sm:block">
-              {card.image && <img src={card.image} alt={card.name} className="w-32 shrink-0 rounded-xl shadow-md sm:w-full" />}
+              {(selectedVersion?.image ?? card.image) && <img src={(selectedVersion?.image ?? card.image) as string} alt={`${card.name}${selectedVersion ? `, ${selectedVersion.label}` : ""}`} className="w-32 shrink-0 rounded-xl shadow-md sm:w-full" />}
               <div className="sm:mt-3">
                 <p className="text-xl font-bold leading-tight sm:hidden">{card.name}</p>
                 <p className="text-sm text-[var(--muted)] sm:hidden">{card.number} · {card.setName}{card.rarity ? ` · ${card.rarity}` : ""}</p>

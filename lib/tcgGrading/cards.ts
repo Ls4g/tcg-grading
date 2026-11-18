@@ -18,6 +18,8 @@ export type CardVersion = {
   variantTags: string[];
   /** Words a listing must contain (user-typed "other version"). */
   mustMention?: string[];
+  /** This version's own artwork, when the source has one (One Piece). */
+  image?: string | null;
 };
 
 export const CUSTOM_VERSION_PREFIX = "custom:";
@@ -268,10 +270,12 @@ function groupOnePiece(rows: OnePieceRow[]): CardResult[] {
       versions: list.map((row): CardVersion => ({
         key: opVersionKey(row),
         label: opVersionLabel(row),
-        rawMarketUsd: row.market_price ?? null,
+        // The source uses 0 for "no price", not free.
+        rawMarketUsd: row.market_price ? row.market_price : null,
         // Version tags come from the name *and* the set: a Premium Booster
         // reprint is a different market from the original-set card.
         variantTags: variantTagsIn("onepiece", `${row.card_name} ${row.set_name}`),
+        image: row.card_image ?? null,
       })),
     };
   });
