@@ -10,7 +10,6 @@ Every listing used, and every listing excluded (with its reason and link), is sh
 2. Copy `.env.example` to `.env.local` and fill in:
    - `APP_USERNAME` / `APP_PASSWORD`: the single shared login (browser sign-in prompt). With these unset, the app refuses every request.
    - `APIFY_TOKEN`: used for eBay sold-listing searches.
-   - `POKEMONTCG_API_KEY` (optional): higher pokemontcg.io rate limits.
    - `BLOB_READ_WRITE_TOKEN` (optional locally; set automatically on Vercel): persistent cache and sales history.
 3. `npm run dev`
 
@@ -35,5 +34,5 @@ To look at the results UI without spending Apify credit, `node --experimental-st
 
 ## Data sources
 
-- Cards and raw prices: api.pokemontcg.io, optcgapi.com (TCGplayer market prices)
+- Cards and raw prices: api.tcgdex.net for Pokémon (replaced api.pokemontcg.io, which shuts down on 1 Mar 2027), optcgapi.com for One Piece (both TCGplayer market prices)
 - Graded sold listings: eBay.com via the Apify actor `compsniper/compsniper-ebay-sold-listings` (switched from `caffein.dev/ebay-sold-listings` on 17 Nov 2026 after a side-by-side test)

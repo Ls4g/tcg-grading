@@ -1,6 +1,8 @@
 // Card lookup for the grading tool.
 //
-// Pokémon: api.pokemontcg.io (English cards, TCGplayer market prices per print).
+// Pokémon: api.tcgdex.net (English cards, TCGplayer market prices per print).
+//   Replaced api.pokemontcg.io on 25 Nov 2026: that API is deprecated, goes
+//   offline on 1 Mar 2027, and was failing ~75% of requests.
 // One Piece: optcgapi.com (English cards, TCGplayer market price per version).
 //
 // Every version the user can choose (1st Edition, Reverse Holo, Manga alt art,
@@ -55,7 +57,7 @@ export type CardResult = {
   versions: CardVersion[];
 };
 
-const POKEMON_API = "https://api.pokemontcg.io/v2";
+const TCGDEX_API = "https://api.tcgdex.net/v2/en";
 const OPTCG_API = "https://optcgapi.com/api";
 
 // Card data barely changes; remembering it briefly means "search, then price"
@@ -74,11 +76,9 @@ async function getJson<T>(url: string): Promise<T> {
 
 async function fetchJson<T>(url: string): Promise<T> {
   const headers: Record<string, string> = { Accept: "application/json" };
-  if (url.startsWith(POKEMON_API) && process.env.POKEMONTCG_API_KEY) headers["X-Api-Key"] = process.env.POKEMONTCG_API_KEY;
   let lastStatus = 0;
-  // pokemontcg.io fails at random under load (measured ~50% 500/502 on
-  // 17 Nov 2026, same query succeeding a second later), so retry a few
-  // times with a short, growing pause before giving up.
+  // Card sources occasionally return a 5xx under load; retry a few times
+  // with a short, growing pause before giving up.
   for (let attempt = 0; attempt < 7; attempt += 1) {
     if (attempt) await new Promise((resolve) => setTimeout(resolve, 300 * attempt));
     const response = await fetch(url, { headers, cache: "no-store" }).catch(() => null);
@@ -97,9 +97,11 @@ type PokemonCard = {
   name: string;
   number: string;
   rarity?: string;
-  set: { id: string; name: string; printedTotal?: number; releaseDate?: string };
+  set: { id: string; name: string; printedTotal?: number };
   images?: { small?: string; large?: string };
   tcgplayer?: { prices?: Record<string, PokemonPrice> };
+  /** Which prints exist, even when TCGplayer doesn't price them separately. */
+  prints?: { firstEdition?: boolean; holo?: boolean; normal?: boolean; reverse?: boolean };
 };
 
 const POKEMON_PRINT_LABELS: Record<string, string> = {
@@ -130,20 +132,27 @@ function pokemonVersions(card: PokemonCard): CardVersion[] {
     rawMarketUsd: prices[printKey]?.market ?? prices[printKey]?.mid ?? null,
     variantTags: [...pokemonPrintTags(printKey), ...setTags],
   }));
+  const add = (printKey: string, label: string) => {
+    if (keys.includes(printKey) || versions.some((v) => v.key === `${card.id}|${printKey}`)) return;
+    versions.push({ key: `${card.id}|${printKey}`, label, rawMarketUsd: null, variantTags: [...pokemonPrintTags(printKey), ...setTags] });
+  };
   // Base Set's Shadowless print isn't priced separately on TCGplayer but is a
   // very different market, so it has to be choosable.
-  if (card.set.id === "base1") {
-    versions.push({ key: `${card.id}|shadowless`, label: "Shadowless", rawMarketUsd: null, variantTags: ["shadowless"] });
-  }
-  // WotC-era sets (1999–2002) had 1st Edition prints that TCGplayer often
-  // doesn't list separately -- and they're usually the most valuable to grade.
-  const year = Number(card.set.releaseDate?.slice(0, 4));
-  if (year && year <= 2002 && !keys.some((key) => key.startsWith("1stEdition"))) {
+  if (card.set.id === "base1") add("shadowless", "Shadowless");
+  // A 1st Edition print TCGplayer doesn't price is usually the most valuable
+  // to grade: offer it, and call the priced one Unlimited.
+  if (card.prints?.firstEdition && !keys.some((key) => key.startsWith("1stEdition"))) {
     for (const version of versions) {
       if (!version.variantTags.length) version.label = `Unlimited ${version.label}`.replace("Unlimited Unlimited", "Unlimited");
     }
-    versions.push({ key: `${card.id}|1stEdition`, label: "1st Edition", rawMarketUsd: null, variantTags: ["1st-edition"] });
+    add("1stEdition", "1st Edition");
   }
+  // Prints that exist but have no price at all.
+  if (!versions.length) {
+    if (card.prints?.normal) add("normal", "Normal");
+    if (card.prints?.holo) add("holofoil", "Holo");
+  }
+  if (card.prints?.reverse && !keys.includes("reverseHolofoil")) add("reverseHolofoil", "Reverse Holo");
   if (!versions.length) versions.push({ key: `${card.id}|standard`, label: "Standard", rawMarketUsd: null, variantTags: setTags });
   return versions;
 }
@@ -161,40 +170,102 @@ function toPokemonResult(card: PokemonCard): CardResult {
   };
 }
 
-const POKEMON_FIELDS = "id,name,number,rarity,set,images,tcgplayer";
+// ---------- Pokémon via TCGdex ----------
 
-/** "charizard", "charizard 4/102", "pikachu 25", "umbreon vmax evolving skies" */
-export function pokemonQuery(input: string): string {
-  const parts: string[] = [];
-  let rest = input.trim();
-  const slash = /(\S+)\s*\/\s*(\d+)/.exec(rest);
-  if (slash) {
-    parts.push(`number:"${slash[1].replace(/^0+(?=\d)/, "")}"`, `set.printedTotal:${Number(slash[2])}`);
-    rest = rest.replace(slash[0], " ");
-  } else {
-    const loneNumber = /(?:^|\s)#?([A-Za-z]{0,4}\d{1,3})(?=\s|$)/.exec(rest);
-    if (loneNumber && /\d/.test(loneNumber[1])) {
-      parts.push(`number:"${loneNumber[1].replace(/^0+(?=\d)/, "")}"`);
-      rest = rest.replace(loneNumber[0], " ");
-    }
-  }
-  const words = rest.replace(/["*:()]/g, " ").split(/\s+/).filter(Boolean);
-  if (words.length) parts.push(`name:"${words.join(" ")}*"`);
-  return parts.join(" ");
+type TcgdexBrief = { id: string; localId: string; name: string; image?: string };
+type TcgdexSet = { id: string; name: string; cardCount?: { official?: number; total?: number } };
+type TcgdexCard = TcgdexBrief & {
+  rarity?: string;
+  set: TcgdexSet;
+  variants?: PokemonCard["prints"];
+  pricing?: { tcgplayer?: Record<string, unknown> | null } | null;
+};
+
+/** "reverse-holofoil" -> "reverseHolofoil", "1st-edition-holofoil" -> "1stEditionHolofoil" */
+function camelPrintKey(key: string) {
+  return key.replace(/-([a-z0-9])/gi, (_, c: string) => c.toUpperCase());
 }
 
+/** "052" -> "52"; promo ids like "SWSH050" stay as they are. */
+function displayNumber(localId: string) {
+  return /^\d+$/.test(localId) ? String(Number(localId)) : localId;
+}
+
+export function tcgdexToPokemonCard(card: TcgdexCard): PokemonCard {
+  const prices: Record<string, PokemonPrice> = {};
+  for (const [key, value] of Object.entries(card.pricing?.tcgplayer ?? {})) {
+    if (key === "unit" || key === "updated" || !value || typeof value !== "object") continue;
+    const row = value as { marketPrice?: number | null; midPrice?: number | null };
+    prices[camelPrintKey(key)] = { market: row.marketPrice || null, mid: row.midPrice || null };
+  }
+  return {
+    id: card.id,
+    name: card.name,
+    number: displayNumber(card.localId),
+    rarity: card.rarity,
+    set: { id: card.set.id, name: card.set.name, printedTotal: card.set.cardCount?.official },
+    images: card.image ? { small: `${card.image}/low.webp`, large: `${card.image}/high.webp` } : undefined,
+    tcgplayer: { prices },
+    prints: card.variants,
+  };
+}
+
+/** "charizard 4/102" -> { name: "charizard", number: "4", printedTotal: 102 } */
+export function parsePokemonSearch(input: string): { name: string; number: string | null; printedTotal: number | null } {
+  let rest = input.trim();
+  let number: string | null = null;
+  let printedTotal: number | null = null;
+  const slash = /(\S+)\s*\/\s*(\d+)/.exec(rest);
+  if (slash) {
+    number = slash[1].replace(/^#/, "");
+    printedTotal = Number(slash[2]);
+    rest = rest.replace(slash[0], " ");
+  } else {
+    const lone = /(?:^|\s)#?([A-Za-z]{0,4}\d{1,3})(?=\s|$)/.exec(rest);
+    if (lone && /\d/.test(lone[1])) {
+      number = lone[1];
+      rest = rest.replace(lone[0], " ");
+    }
+  }
+  return { name: rest.replace(/["*:()]/g, " ").replace(/\s+/g, " ").trim(), number, printedTotal };
+}
+
+const sameNumber = (a: string, b: string) => displayNumber(a).toLowerCase() === displayNumber(b).toLowerCase();
+const setOfCard = (brief: TcgdexBrief) => brief.id.slice(0, brief.id.length - brief.localId.length - 1);
+const SEARCH_LIMIT = 30;
+
 export async function searchPokemon(input: string): Promise<CardResult[]> {
-  const q = pokemonQuery(input);
-  if (!q) return [];
-  const url = `${POKEMON_API}/cards?q=${encodeURIComponent(q)}&pageSize=30&orderBy=-set.releaseDate&select=${POKEMON_FIELDS}`;
-  const data = await getJson<{ data?: PokemonCard[] }>(url);
-  return (data.data ?? []).map(toPokemonResult);
+  const { name, number, printedTotal } = parsePokemonSearch(input);
+  if (!name && !number) return [];
+  const sets = await getJson<TcgdexSet[]>(`${TCGDEX_API}/sets`);
+  const order = new Map(sets.map((set, index) => [set.id, index]));
+  const fitsTotal = (setId: string) => printedTotal === null || sets.find((s) => s.id === setId)?.cardCount?.official === printedTotal;
+
+  let briefs: TcgdexBrief[];
+  if (name) {
+    briefs = await getJson<TcgdexBrief[]>(`${TCGDEX_API}/cards?name=${encodeURIComponent(name)}`);
+    if (number) briefs = briefs.filter((b) => sameNumber(b.localId, number));
+    briefs = briefs.filter((b) => fitsTotal(setOfCard(b)));
+  } else {
+    // Number only ("4/102"): the sets of that size, then that number in each.
+    const candidates = sets.filter((s) => printedTotal === null || s.cardCount?.official === printedTotal).slice(-12);
+    const lists = await Promise.all(candidates.map((s) =>
+      getJson<{ cards?: TcgdexBrief[] }>(`${TCGDEX_API}/sets/${encodeURIComponent(s.id)}`).then((d) => d.cards ?? []).catch(() => [])));
+    briefs = lists.flat().filter((b) => sameNumber(b.localId, number as string));
+  }
+  // Newest sets first; the sets list is in release order.
+  briefs.sort((a, b) => (order.get(setOfCard(b)) ?? -1) - (order.get(setOfCard(a)) ?? -1));
+  const cards = await Promise.all(briefs.slice(0, SEARCH_LIMIT).map((b) => getPokemonCard(b.id).catch(() => null)));
+  return cards.filter((c): c is CardResult => c !== null);
 }
 
 async function getPokemonCard(id: string): Promise<CardResult | null> {
   if (!/^[a-z0-9.-]+-[A-Za-z0-9]+$/i.test(id)) return null;
-  const data = await getJson<{ data?: PokemonCard }>(`${POKEMON_API}/cards/${encodeURIComponent(id)}?select=${POKEMON_FIELDS}`);
-  return data.data ? toPokemonResult(data.data) : null;
+  const card = await getJson<TcgdexCard>(`${TCGDEX_API}/cards/${encodeURIComponent(id)}`).catch((error: Error) => {
+    if (/HTTP 404/.test(error.message)) return null;
+    throw error;
+  });
+  return card?.set ? toPokemonResult(tcgdexToPokemonCard(card)) : null;
 }
 
 // ---------- One Piece ----------

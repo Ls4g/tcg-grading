@@ -295,4 +295,32 @@ const noOdds = adviseOn(buckets, { rawCost: 30, sellFeePct: 10, gradingCost: { P
 assert.equal(noOdds.headline.tone, "thin");
 assert.match(noOdds.headline.label, /^if it gets CGC 10 Pristine/);
 
-console.log("Cert dedupe, trend, odds, PSA tiers, typed versions, search terms, live-run regressions, CompSniper rows, outliers and headline all pass.");
+// ---- Pokémon via TCGdex (shapes from the live API, 25 Nov 2026) ----
+import { parsePokemonSearch, tcgdexToPokemonCard } from "../lib/tcgGrading/cards.ts";
+assert.deepEqual(parsePokemonSearch("dragonite 52/108"), { name: "dragonite", number: "52", printedTotal: 108 });
+assert.deepEqual(parsePokemonSearch("4/102"), { name: "", number: "4", printedTotal: 102 });
+assert.deepEqual(parsePokemonSearch("charizard ex 6"), { name: "charizard ex", number: "6", printedTotal: null });
+assert.deepEqual(parsePokemonSearch("Umbreon VMAX"), { name: "Umbreon VMAX", number: null, printedTotal: null });
+
+const dragonite = tcgdexToPokemonCard({
+  id: "xy6-52", localId: "52", name: "Dragonite", image: "https://assets.tcgdex.net/en/xy/xy6/52", rarity: "Rare Holo",
+  set: { id: "xy6", name: "Roaring Skies", cardCount: { official: 108, total: 112 } },
+  variants: { firstEdition: false, holo: false, normal: true, reverse: false },
+  pricing: { tcgplayer: { unit: "USD", updated: "2026-11-24T22:16:28Z", holofoil: { marketPrice: 29.7, midPrice: 31 }, "reverse-holofoil": { marketPrice: 30.66, midPrice: 32 } } },
+});
+assert.equal(dragonite.number, "52");
+assert.equal(dragonite.set.printedTotal, 108);
+assert.equal(dragonite.images.small, "https://assets.tcgdex.net/en/xy/xy6/52/low.webp");
+assert.deepEqual(dragonite.tcgplayer.prices, { holofoil: { market: 29.7, mid: 31 }, reverseHolofoil: { market: 30.66, mid: 32 } });
+
+// Neo Genesis Lugia: 1st Edition priced separately, zero-padded sv numbers shown plainly.
+const lugia = tcgdexToPokemonCard({
+  id: "neo1-9", localId: "9", name: "Lugia", set: { id: "neo1", name: "Neo Genesis", cardCount: { official: 111 } },
+  variants: { firstEdition: true, holo: true }, pricing: { tcgplayer: { "1st-edition-holofoil": { marketPrice: 1300 }, "unlimited-holofoil": { marketPrice: 513.49 } } },
+});
+assert.deepEqual(Object.keys(lugia.tcgplayer.prices), ["1stEditionHolofoil", "unlimitedHolofoil"]);
+assert.equal(tcgdexToPokemonCard({ id: "sv03.5-006", localId: "006", name: "Charizard ex", set: { id: "sv03.5", name: "151", cardCount: { official: 165 } } }).number, "6");
+// A 0 price from the source means unknown, not free.
+assert.equal(tcgdexToPokemonCard({ id: "x-1", localId: "1", name: "X", set: { id: "x", name: "X" }, pricing: { tcgplayer: { normal: { marketPrice: 0, midPrice: 0 } } } }).tcgplayer.prices.normal.market, null);
+
+console.log("Cert dedupe, trend, odds, PSA tiers, typed versions, search terms, live-run regressions, CompSniper rows, outliers, headline and TCGdex mapping all pass.");
