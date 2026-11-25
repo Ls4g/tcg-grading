@@ -285,15 +285,30 @@ assert.equal(dropPriceOutliers(baseTens.slice(5, 8)).every((v) => v.used), true)
 assert.match(dropPriceOutliers([...baseTens.slice(0, 5), judgeListing(gear5, row("One Piece Monkey D. Luffy OP05-119 PSA 10 low", 9))]).find((v) => v.price === 9).reason, /under a third/);
 
 // ---- Headline (the big number the result leads with) ----
-assert.deepEqual(oddsAdvice.headline, { tone: "good", amount: 13.4, label: "expected per card with PSA, at your odds" });
+assert.deepEqual(oddsAdvice.headline, { tone: "good", action: "Grade it with PSA", company: "PSA", amount: 13.4, label: "expected per card with PSA, at your odds" });
 assert.equal(thinAdvice.headline.label, "expected per card with PSA, at your odds");
 assert.equal(losing.headline.tone, "bad");
+assert.equal(losing.headline.action, "Sell it raw");
 assert.ok(losing.headline.amount < 0);
-assert.deepEqual(adviseOn([], { rawCost: 1, sellFeePct: 13, gradingCost: {} }).headline, { tone: "thin", amount: null, label: "No graded sales found" });
+assert.deepEqual(adviseOn([], { rawCost: 1, sellFeePct: 13, gradingCost: {} }).headline, { tone: "thin", action: "Not enough sales to tell", company: null, amount: null, label: "No graded sales found" });
+assert.equal(thinAdvice.headline.action, "Sell it raw");
 const noOdds = adviseOn(buckets, { rawCost: 30, sellFeePct: 10, gradingCost: { PSA: 25, CGC: 20 } });
 // Best plain result is the 1-sale CGC 10 Pristine: shown, but flagged as thin.
 assert.equal(noOdds.headline.tone, "thin");
 assert.match(noOdds.headline.label, /^if it gets CGC 10 Pristine/);
+
+// ---- Scenarios: best / likely / worst for one company ----
+import { scenariosFor } from "../lib/tcgGrading/advice.ts";
+// Odds 50/40/10/0: likely = 10 (highest chance), worst = 8 (lowest with any chance).
+const psaScenarios = scenariosFor(outcomesFor(buckets, oddsCosts), oddsCosts, "PSA");
+assert.deepEqual(psaScenarios.map((x) => [x.kind, x.grade, x.net, x.source, x.salePrice]), [
+  ["best", 10, 44, "sales", 110], ["likely", 10, 44, "sales", 110], ["worst", 8, -28, "raw value", 30],
+]);
+// No odds: best 10, likely 9, worst 8.
+const plainCosts = { rawCost: 30, sellFeePct: 10, gradingCost: { PSA: 25 } };
+assert.deepEqual(scenariosFor(outcomesFor(buckets, plainCosts), plainCosts, "PSA").map((x) => [x.kind, x.grade, x.net]), [["best", 10, 44], ["likely", 9, -14.5], ["worst", 8, -28]]);
+// A company with no sales at a grade borrows it from another company.
+assert.equal(scenariosFor(outcomesFor(buckets, plainCosts), plainCosts, "CGC")[0].source, "other company");
 
 // ---- Pokémon via TCGdex (shapes from the live API, 25 Nov 2026) ----
 import { parsePokemonSearch, tcgdexToPokemonCard } from "../lib/tcgGrading/cards.ts";

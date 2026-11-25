@@ -2,7 +2,7 @@
 /* eslint-disable @next/next/no-img-element -- card images come from the card APIs' own CDNs */
 
 import { useEffect, useMemo, useState } from "react";
-import { adviseOn, ODDS_GRADES, oddsAreUsable, type CostInputs, type GradeOdds, type OddsGrade } from "@/lib/tcgGrading/advice";
+import { adviseOn, ODDS_GRADES, oddsAreUsable, outcomesFor, scenariosFor, type CostInputs, type GradeOdds, type OddsGrade } from "@/lib/tcgGrading/advice";
 import { customVersion, type CardResult, type CardVersion } from "@/lib/tcgGrading/cards";
 import { PSA_FEES_AS_OF, PSA_TIERS, suggestPsaTier } from "@/lib/tcgGrading/gradingFees";
 import type { Company, Game, ListingVerdict } from "@/lib/tcgGrading/listings";
@@ -259,6 +259,17 @@ export default function GradingTool() {
       .map((o) => ({ company: o.company, amount: o.net ?? o.uplift, basis: `best case: if it gets ${o.label}`, thin: o.thin }))
       .sort((a, b) => b.amount - a.amount);
   }, [advice]);
+  // The big three always get a card, so "no BGS card" never reads as "BGS not checked".
+  const missingCompanies = useMemo(() => (["PSA", "CGC", "BGS"] as Company[]).filter((c) => !companyCards.some((card) => card.company === c)), [companyCards]);
+
+  // The decision's company: what each outcome would look like with it.
+  const focusCompany = advice?.headline.company ?? companyCards[0]?.company ?? null;
+  const scenarios = useMemo(
+    () => (sales && focusCompany ? scenariosFor(outcomesFor(sales.buckets, costs), costs, focusCompany) : []),
+    [sales, costs, focusCompany],
+  );
+  const keepShare = 1 - Math.min(Math.max(costs.sellFeePct, 0), 100) / 100;
+  const focusGradingCost = focusCompany ? (costs.gradingCost[focusCompany] ?? 0) : 0;
   // Grades grouped by company, in the same order as the cards.
   const gradeGroups = useMemo(() => {
     if (!advice) return [];
@@ -310,7 +321,6 @@ export default function GradingTool() {
   const card$ = "rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-4 sm:p-5";
   const toneColor = { good: "var(--good)", bad: "var(--bad)", thin: "var(--thin)" } as const;
   const toneSoft = { good: "var(--good-soft)", bad: "var(--bad-soft)", thin: "var(--thin-soft)" } as const;
-  const toneWord = { good: "Worth grading", bad: "Not worth grading", thin: "Too little data to be sure" } as const;
 
   const activePreset = ODDS_PRESETS.find((preset) => ODDS_GRADES.every((g) => oddsText[g] === String(preset.odds[g])))?.name ?? null;
   const numbersSummary = [
@@ -577,21 +587,85 @@ export default function GradingTool() {
       {sales && advice && !pricing && (
         <section className="mt-4 space-y-4">
           <div className="rounded-2xl border-2 p-5 sm:p-6" style={{ borderColor: toneColor[advice.headline.tone], background: toneSoft[advice.headline.tone] }}>
-            <p className="text-xs font-semibold uppercase tracking-wide" style={{ color: toneColor[advice.headline.tone] }}>
-              {toneWord[advice.headline.tone]} · {sales.version.label}{sales.card.game === "onepiece" ? ` · ${sales.language === "english" ? "English" : "Japanese"}` : ""}
+            <p className="text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
+              {sales.card.name} · {sales.version.label}{sales.card.game === "onepiece" ? ` · ${sales.language === "english" ? "English" : "Japanese"}` : ""}
+            </p>
+            <p className="mt-1 text-3xl font-extrabold leading-tight tracking-tight sm:text-4xl" style={{ color: toneColor[advice.headline.tone] }}>
+              {advice.headline.action}
             </p>
             {advice.headline.amount != null && (
-              <p className="mt-1 text-4xl font-extrabold tabular-nums tracking-tight sm:text-5xl" style={{ color: toneColor[advice.headline.tone] }}>
-                {signed(advice.headline.amount)}
+              <p className="mt-1 text-base">
+                <span className="font-bold tabular-nums" style={{ color: advice.headline.amount > 0 ? toneColor.good : toneColor.bad }}>{signed(advice.headline.amount)}</span>{" "}
+                <span className="text-[var(--muted)]">{advice.headline.label}</span>
               </p>
             )}
-            {advice.headline.amount != null && <p className="text-sm text-[var(--muted)]">{advice.headline.label}</p>}
-            <p className="mt-3 text-base font-medium sm:text-lg">{advice.verdict}</p>
-            <a href="#why" className="mt-3 inline-block text-sm font-semibold underline">See why ↓</a>
+            {advice.headline.tone === "thin" && (
+              <p className="mt-2 text-sm font-medium" style={{ color: toneColor.thin }}>Based on only a few sales, so treat it as a rough guide.</p>
+            )}
           </div>
 
+          {focusCompany && scenarios.length > 0 && (
+            <div className={card$}>
+              <h2 className="text-lg font-bold">Sell it raw, or grade it?</h2>
+              <div className="mt-3 grid grid-cols-2 gap-3">
+                <div className="rounded-xl border border-[var(--line)] p-3">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">Sell raw now</p>
+                  <p className="mt-1 text-2xl font-extrabold tabular-nums">{costs.rawCost ? `~${money(costs.rawCost)}` : "?"}</p>
+                  <p className="text-xs text-[var(--muted)]">{costs.rawCost ? "its ungraded value, no waiting" : "enter the ungraded value in step 3"}</p>
+                </div>
+                {(() => {
+                  const likely = scenarios.find((x) => x.kind === "likely")!;
+                  const youGet = likely.salePrice * keepShare - focusGradingCost;
+                  const better = youGet - costs.rawCost;
+                  return (
+                    <div className="rounded-xl border-2 p-3" style={{ borderColor: better > 0 ? toneColor.good : "var(--line)" }}>
+                      <p className="text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">Grade with {focusCompany}</p>
+                      <p className="mt-1 text-2xl font-extrabold tabular-nums">~{money(Math.max(0, youGet))}</p>
+                      <p className="text-xs text-[var(--muted)]">
+                        if it gets a {likely.grade === 7 ? "7 or lower" : likely.grade}: sells ~{money(likely.salePrice)}, minus fees{focusGradingCost ? ` and the ${money(focusGradingCost)} grading cost` : ""}. Plus the wait for grading.
+                      </p>
+                      {costs.rawCost > 0 && (
+                        <p className="mt-1.5 text-sm font-bold tabular-nums" style={{ color: better > 0 ? toneColor.good : toneColor.bad }}>
+                          {better > 0 ? `${money(better)} more than selling raw` : `${money(Math.abs(better))} less than selling raw`}
+                        </p>
+                      )}
+                    </div>
+                  );
+                })()}
+              </div>
+
+              <h3 className="mt-5 text-sm font-semibold">What could happen with {focusCompany}</h3>
+              <ul className="mt-2 divide-y divide-[var(--line)] rounded-xl border border-[var(--line)]">
+                {scenarios.map((x) => {
+                  const title = { best: "Best case", likely: "Most likely", worst: "Worst case" }[x.kind];
+                  const gradeText = x.grade === 7 ? "7 or lower" : String(x.grade);
+                  return (
+                    <li key={x.kind} className="flex items-center gap-3 px-3 py-2.5">
+                      <span className="w-[6.5rem] shrink-0">
+                        <span className="block text-sm font-semibold">{title}</span>
+                        <span className="block text-xs text-[var(--muted)]">
+                          {focusCompany} {gradeText}{x.oddsPct ? ` · ${x.oddsPct}% chance` : ""}
+                        </span>
+                      </span>
+                      <span className="min-w-0 flex-1 text-xs text-[var(--muted)]">
+                        {x.source === "sales" ? `sells ~${money(x.salePrice)}` : x.source === "other company" ? `no ${focusCompany} sales; ${x.label.replace(" (stand-in)", "")} sells ~${money(x.salePrice)}` : `no sales at this grade; assumed to sell at its ungraded value`}
+                        {x.thin ? " · few sales" : ""}
+                      </span>
+                      <span className="shrink-0 text-right text-base font-bold tabular-nums" style={{ color: x.net > 0 ? toneColor.good : toneColor.bad }}>{signed(x.net)}</span>
+                    </li>
+                  );
+                })}
+              </ul>
+              <p className="mt-2 text-xs text-[var(--muted)]">
+                Profit compared with selling raw, after selling fees{focusGradingCost ? " and grading cost" : " (no grading cost entered)"}.{" "}
+                {gradeOdds && oddsAreUsable(gradeOdds) ? "Chances come from the condition you picked in step 3." : "Pick your card's condition in step 3 to see chances and one expected profit."}
+              </p>
+              <a href="#why" className="mt-3 inline-block text-sm font-semibold underline">Compare all companies ↓</a>
+            </div>
+          )}
+
           <div id="why" className="scroll-mt-4 space-y-4">
-            {companyCards.length > 0 && (
+            {(companyCards.length > 0 || missingCompanies.length > 0) && (
               <div className="grid gap-3 sm:grid-cols-3">
                 {companyCards.map((c, index) => (
                   <div key={c.company} className="relative overflow-hidden rounded-2xl border bg-[var(--surface)] p-4 pl-5"
@@ -604,6 +678,14 @@ export default function GradingTool() {
                     </div>
                     <p className="mt-1 text-2xl font-extrabold tabular-nums" style={{ color: c.amount > 0 ? toneColor.good : toneColor.bad }}>{signed(c.amount)}</p>
                     <p className="text-xs text-[var(--muted)]">{c.basis}</p>
+                  </div>
+                ))}
+                {missingCompanies.map((company) => (
+                  <div key={company} className="relative overflow-hidden rounded-2xl border border-dashed border-[var(--line)] bg-[var(--surface)] p-4 pl-5 opacity-80">
+                    <span className="absolute inset-y-0 left-0 w-1.5 opacity-40" style={{ background: COMPANY_COLORS[company] ?? "var(--muted)" }} aria-hidden="true" />
+                    <p className="text-sm font-bold tracking-wide">{company}</p>
+                    <p className="mt-1 text-lg font-bold text-[var(--muted)]">Not enough sales data</p>
+                    <p className="text-xs text-[var(--muted)]">Checked, but no {company} sales of this version in the last 90 days.</p>
                   </div>
                 ))}
               </div>
@@ -670,6 +752,7 @@ export default function GradingTool() {
                 <span className="text-[var(--muted)] transition group-open:rotate-180" aria-hidden="true">▾</span>
               </summary>
               <div className="mt-3 space-y-4 text-sm">
+                <p>{advice.verdict}</p>
                 {advice.expected.length > 0 && (
                   <div>
                     <h3 className="text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">How the expected profit is worked out</h3>

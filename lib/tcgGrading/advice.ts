@@ -52,6 +52,10 @@ export type BucketOutcome = GradeBucket & {
 /** The one number the result leads with, and how much to trust it. */
 export type Headline = {
   tone: "good" | "bad" | "thin";
+  /** The decision in plain words: "Grade it with PSA", "Sell it raw"... */
+  action: string;
+  /** The company the decision is about, when there is one. */
+  company: Company | null;
   /** Profit per card in USD; null when there is nothing to base it on. */
   amount: number | null;
   /** What the amount is, e.g. "expected per card with PSA". */
@@ -123,15 +127,48 @@ function crossCompanyProxy(outcomes: BucketOutcome[], company: Company, grade: O
  * from the same grade at another company, or failing that, by assuming the
  * slab sells for the raw price: you lose the fees and the grading cost.
  */
+type FilledGrade = ExpectedOutcome["used"][number] & {
+  /** What the slab is assumed to sell for (raw value when no sales exist). */
+  salePrice: number;
+};
+
+/** One grade at one company: its own sales, else another company's, else raw value. */
+function fillGrade(outcomes: BucketOutcome[], costs: CostInputs, company: Company, grade: OddsGrade, oddsPct: number): FilledGrade {
+  const keep = 1 - Math.min(Math.max(costs.sellFeePct, 0), 100) / 100;
+  const cost = costs.gradingCost[company];
+  const gradingCost = typeof cost === "number" && Number.isFinite(cost) ? cost : 0;
+  const own = bucketForOdds(outcomes, company, grade);
+  if (own) return { grade, label: own.label, net: own.uplift - gradingCost, oddsPct, source: "sales", thin: own.thin, salePrice: own.median };
+  const proxy = crossCompanyProxy(outcomes, company, grade);
+  if (proxy) return { grade, label: `${proxy.label} (stand-in)`, net: proxy.uplift - gradingCost, oddsPct, source: "other company", thin: proxy.thin, salePrice: proxy.median };
+  return {
+    grade, label: `${grade === 7 ? "≤7" : grade} at raw value`, oddsPct, source: "raw value", thin: false, salePrice: costs.rawCost,
+    net: Math.round((costs.rawCost * keep - costs.rawCost - gradingCost) * 100) / 100,
+  };
+}
+
+export type Scenario = FilledGrade & { kind: "best" | "likely" | "worst" };
+
+/**
+ * Best case (a 10), the likely grade (your most likely, else a 9) and the
+ * worst case (your lowest grade with any chance, else an 8), for one company.
+ */
+export function scenariosFor(outcomes: BucketOutcome[], costs: CostInputs, company: Company): Scenario[] {
+  const odds = oddsAreUsable(costs.gradeOdds) ? costs.gradeOdds : null;
+  const withChance = odds ? ODDS_GRADES.filter((g) => odds[g] > 0) : [];
+  const likely: OddsGrade = odds ? [...withChance].sort((a, b) => odds[b] - odds[a] || b - a)[0] : 9;
+  const worst: OddsGrade = odds ? withChance[withChance.length - 1] : 8;
+  return ([["best", 10], ["likely", likely], ["worst", worst]] as const).map(([kind, grade]) => ({
+    kind, ...fillGrade(outcomes, costs, company, grade, odds ? odds[grade] : 0),
+  }));
+}
+
 export function expectedFor(outcomes: BucketOutcome[], costs: CostInputs): ExpectedOutcome[] {
   if (!oddsAreUsable(costs.gradeOdds)) return [];
   const odds = costs.gradeOdds;
-  const keep = 1 - Math.min(Math.max(costs.sellFeePct, 0), 100) / 100;
   const companies = [...new Set(outcomes.map((o) => o.company))];
   return companies
     .map((company): ExpectedOutcome => {
-      const cost = costs.gradingCost[company];
-      const gradingCost = typeof cost === "number" && Number.isFinite(cost) ? cost : 0;
       const used: ExpectedOutcome["used"] = [];
       const missingGrades: OddsGrade[] = [];
       let expectedNet = 0;
@@ -140,18 +177,10 @@ export function expectedFor(outcomes: BucketOutcome[], costs: CostInputs): Expec
       for (const grade of ODDS_GRADES) {
         const oddsPct = odds[grade];
         if (oddsPct <= 0) continue;
-        const own = bucketForOdds(outcomes, company, grade);
-        let entry: ExpectedOutcome["used"][number];
-        if (own) {
-          entry = { grade, label: own.label, net: own.uplift - gradingCost, oddsPct, source: "sales", thin: own.thin };
-          coveredPct += oddsPct;
-        } else {
-          missingGrades.push(grade);
-          const proxy = crossCompanyProxy(outcomes, company, grade);
-          entry = proxy
-            ? { grade, label: `${proxy.label} (stand-in)`, net: proxy.uplift - gradingCost, oddsPct, source: "other company", thin: proxy.thin }
-            : { grade, label: `${grade === 7 ? "≤7" : grade} at raw value`, net: Math.round((costs.rawCost * keep - costs.rawCost - gradingCost) * 100) / 100, oddsPct, source: "raw value", thin: false };
-        }
+        const { salePrice: _salePrice, ...entry } = fillGrade(outcomes, costs, company, grade, oddsPct);
+        void _salePrice;
+        if (entry.source === "sales") coveredPct += oddsPct;
+        else missingGrades.push(grade);
         if (entry.thin) thinPct += oddsPct;
         used.push(entry);
         expectedNet += (entry.net * oddsPct) / 100;
@@ -170,7 +199,7 @@ export function adviseOn(buckets: GradeBucket[], costs: CostInputs): Advice {
     return {
       outcomes,
       expected,
-      headline: { tone: "thin", amount: null, label: "No graded sales found" },
+      headline: { tone: "thin", action: "Not enough sales to tell", company: null, amount: null, label: "No graded sales found" },
       verdict: "No graded sales of this exact card version were found in the last 90 days, so there is nothing to base a grading decision on.",
       sameGrade: [], crossGrade: [], breakEven: [],
       warnings: ["Check the excluded listings below — the card may sell under a different version or language."],
@@ -239,8 +268,14 @@ export function adviseOn(buckets: GradeBucket[], costs: CostInputs): Advice {
   const bestExpected = solidExpected[0] ?? expected.filter((e) => e.coveredPct >= 50)[0] ?? expected[0];
   if (bestExpected) {
     const others = expected.filter((e) => e !== bestExpected).map((e) => `${e.company} ${money(e.expectedNet)}`);
+    const solid = solidExpected.includes(bestExpected);
+    const worth = bestExpected.expectedNet > 0;
     headline = {
-      tone: !solidExpected.includes(bestExpected) ? "thin" : bestExpected.expectedNet > 0 ? "good" : "bad",
+      tone: !solid ? "thin" : worth ? "good" : "bad",
+      action: worth
+        ? `${solid ? "Grade it" : "Probably worth grading"} with ${bestExpected.company}`
+        : solid ? "Sell it raw" : "Probably better to sell raw",
+      company: bestExpected.company,
       amount: bestExpected.expectedNet,
       label: `expected per card with ${bestExpected.company}, at your odds`,
     };
@@ -260,12 +295,18 @@ export function adviseOn(buckets: GradeBucket[], costs: CostInputs): Advice {
     }
   } else if (!profitable.length) {
     const bestLoss = [...outcomes].sort((a, b) => value(b) - value(a))[0];
-    headline = { tone: "bad", amount: value(bestLoss), label: `best case: ${bestLoss.label}` };
+    headline = { tone: "bad", action: "Sell it raw", company: bestLoss.company, amount: value(bestLoss), label: `even the best case (${bestLoss.label}) loses money` };
     verdict = `Not worth grading on current sales: no grade, at any company, beats ${money(costs.rawCost)} raw after fees${missingCosts.length === companies.length ? "" : " and grading costs"}.`;
   } else {
     const best = [...profitable].sort((a, b) => value(b) - value(a))[0];
-    headline = { tone: best.thin ? "thin" : "good", amount: value(best), label: `if it gets ${best.label}` };
-    const minGrade = Math.min(...profitable.map((o) => o.grade));
+    const minGrade = Math.min(...profitable.filter((o) => o.company === best.company).map((o) => o.grade));
+    headline = {
+      tone: best.thin ? "thin" : "good",
+      action: best.grade === minGrade ? `Grade with ${best.company} only if it can get a ${best.grade}` : `Grade with ${best.company} if it can get a ${minGrade} or better`,
+      company: best.company,
+      amount: value(best),
+      label: `if it gets ${best.label}`,
+    };
     const belowTen = outcomes.filter((o) => o.grade < 10);
     if (profitable.every((o) => o.grade === 10) && belowTen.length) {
       verdict = `Only worth grading if you're confident of a 10 — lower grades lose money. Best result: ${best.label} at ${money(best.median)} (${money(value(best))} profit).`;
