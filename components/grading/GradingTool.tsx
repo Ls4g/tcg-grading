@@ -638,13 +638,16 @@ export default function GradingTool() {
               <ul className="mt-2 divide-y divide-[var(--line)] rounded-xl border border-[var(--line)]">
                 {scenarios.map((x) => {
                   const title = { best: "Best case", likely: "Most likely", worst: "Worst case" }[x.kind];
-                  const gradeText = x.grade === 7 ? "7 or lower" : String(x.grade);
+                  const gradeText = x.grade === 7 ? "≤7" : String(x.grade);
                   return (
                     <li key={x.kind} className="flex items-center gap-3 px-3 py-2.5">
-                      <span className="w-[6.5rem] shrink-0">
-                        <span className="block text-sm font-semibold">{title}</span>
-                        <span className="block text-xs text-[var(--muted)]">
-                          {focusCompany} {gradeText}{x.oddsPct ? ` · ${x.oddsPct}% chance` : ""}
+                      <span className="w-[7.5rem] shrink-0">
+                        <span className="inline-block whitespace-nowrap rounded-md px-2 py-0.5 text-base font-extrabold tabular-nums"
+                          style={{ background: x.net > 0 ? toneSoft.good : toneSoft.bad, color: x.net > 0 ? toneColor.good : toneColor.bad }}>
+                          {focusCompany} {gradeText}
+                        </span>
+                        <span className="mt-0.5 block text-xs text-[var(--muted)]">
+                          {title}{x.oddsPct ? ` · ${x.oddsPct}% chance` : ""}
                         </span>
                       </span>
                       <span className="min-w-0 flex-1 text-xs text-[var(--muted)]">
