@@ -16,6 +16,8 @@ const COST_STORAGE_KEY = "tcg-grading-costs";
 const ODDS_STORAGE_KEY = "tcg-grading-odds";
 const BATCH_STORAGE_KEY = "tcg-grading-batch";
 const BATCH_MAX = 10;
+// Brand-ish colours, used only as small markers next to each company.
+const COMPANY_COLORS: Partial<Record<Company, string>> = { PSA: "#d6252a", CGC: "#1f5fbf", BGS: "#9a7b2f", SGC: "#1d1d1f", TAG: "#6b46c1", ACE: "#0f8b8d" };
 const TILE_LIMIT = 40;
 const COST_PER_LOOKUP_USD = 0.16;
 
@@ -240,6 +242,38 @@ export default function GradingTool() {
   const used = useMemo(() => sales?.listings.filter((l) => l.used) ?? [], [sales]);
   const excluded = sales?.listings.filter((l) => !l.used) ?? [];
   // eBay returns the newest 40 only; for a popular card that can be days, not 90.
+  // One card per company: expected profit at the user's odds, else the best
+  // plain grade. Sorted best first.
+  const companyCards = useMemo(() => {
+    if (!advice) return [];
+    if (advice.expected.length) {
+      return advice.expected.map((e) => ({ company: e.company, amount: e.expectedNet, basis: "expected per card at your odds", thin: e.thinPct >= 30 || e.coveredPct < 50 }));
+    }
+    const byCompany = new Map<Company, (typeof advice.outcomes)[number]>();
+    for (const o of advice.outcomes) {
+      if (o.label !== `${o.company} ${o.grade}`) continue;
+      const current = byCompany.get(o.company);
+      if (!current || (o.net ?? o.uplift) > (current.net ?? current.uplift)) byCompany.set(o.company, o);
+    }
+    return [...byCompany.values()]
+      .map((o) => ({ company: o.company, amount: o.net ?? o.uplift, basis: `best case: if it gets ${o.label}`, thin: o.thin }))
+      .sort((a, b) => b.amount - a.amount);
+  }, [advice]);
+  // Grades grouped by company, in the same order as the cards.
+  const gradeGroups = useMemo(() => {
+    if (!advice) return [];
+    const order = companyCards.map((c) => c.company);
+    const groups = new Map<Company, typeof advice.outcomes>();
+    for (const o of advice.outcomes) groups.set(o.company, [...(groups.get(o.company) ?? []), o]);
+    return [...groups.entries()]
+      .map(([company, rows]) => ({ company, rows, sales: rows.reduce((n, r) => n + r.count, 0) }))
+      .sort((a, b) => (order.indexOf(a.company) + 99) % 99 - (order.indexOf(b.company) + 99) % 99);
+  }, [advice, companyCards]);
+
+  // The one warning worth showing up front: skip the legend for "few" and
+  // the missing-cost reminder (the rows already say "before grading fee").
+  const keyWarning = advice?.warnings.find((w) => !w.startsWith("*") && !w.startsWith("No grading cost entered")) ?? null;
+
   const span = useMemo(() => {
     const dates = used.map((l) => l.soldDate).filter((d): d is string => Boolean(d)).sort();
     if (dates.length < 2) return null;
@@ -556,111 +590,135 @@ export default function GradingTool() {
             <a href="#why" className="mt-3 inline-block text-sm font-semibold underline">See why ↓</a>
           </div>
 
-          <div id="why" className={`${card$} scroll-mt-4 space-y-5`}>
-            <h2 className="text-lg font-bold">Why</h2>
-
-            {advice.expected.length > 0 && (
-              <div>
-                <h3 className="text-sm font-semibold uppercase tracking-wide text-[var(--muted)]">Expected profit per card, at your odds</h3>
-                <ul className="mt-2 space-y-2 text-sm">
-                  {advice.expected.map((e) => (
-                    <li key={e.company}>
-                      <span className="font-bold tabular-nums" style={{ color: e.expectedNet > 0 ? "var(--good)" : "var(--bad)" }}>{signed(e.expectedNet)}</span>
-                      {" "}with {e.company}
-                      {e.coveredPct < 100 ? <span className="text-[var(--muted)]"> · {e.coveredPct}% from its own sales</span> : ""}
-                      {e.thinPct >= 30 ? <span className="text-[var(--muted)]"> · {e.thinPct}% on grades with few sales</span> : ""}
-                      <span className="block text-xs text-[var(--muted)]">{e.used.map((u) => `${u.oddsPct}% × ${u.label} ${signed(u.net)}`).join(" + ")}</span>
-                    </li>
-                  ))}
-                </ul>
+          <div id="why" className="scroll-mt-4 space-y-4">
+            {companyCards.length > 0 && (
+              <div className="grid gap-3 sm:grid-cols-3">
+                {companyCards.map((c, index) => (
+                  <div key={c.company} className="relative overflow-hidden rounded-2xl border bg-[var(--surface)] p-4 pl-5"
+                    style={{ borderColor: index === 0 && c.amount > 0 ? toneColor.good : "var(--line)" }}>
+                    <span className="absolute inset-y-0 left-0 w-1.5" style={{ background: COMPANY_COLORS[c.company] ?? "var(--muted)" }} aria-hidden="true" />
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-sm font-bold tracking-wide">{c.company}</p>
+                      {index === 0 && c.amount > 0 && <span className="rounded-full px-2 py-0.5 text-[11px] font-semibold" style={{ background: toneSoft.good, color: toneColor.good }}>Best pick</span>}
+                      {c.thin && <span className="rounded-full px-2 py-0.5 text-[11px] font-semibold" style={{ background: toneSoft.thin, color: toneColor.thin }}>Few sales</span>}
+                    </div>
+                    <p className="mt-1 text-2xl font-extrabold tabular-nums" style={{ color: c.amount > 0 ? toneColor.good : toneColor.bad }}>{signed(c.amount)}</p>
+                    <p className="text-xs text-[var(--muted)]">{c.basis}</p>
+                  </div>
+                ))}
               </div>
             )}
 
             {advice.outcomes.length > 0 && (
-              <div className="-mx-4 overflow-x-auto px-4 sm:mx-0 sm:px-0">
-                <table className="w-full border-collapse text-sm">
-                  <thead>
-                    <tr className="border-b border-[var(--line)] text-xs uppercase tracking-wide text-[var(--muted)]">
-                      <th className="py-2 pr-3 text-left font-semibold">Grade</th>
-                      <th className="py-2 pr-3 text-right font-semibold">Sales</th>
-                      <th className="py-2 pr-3 text-right font-semibold">Median</th>
-                      <th className="hidden py-2 pr-3 text-right font-semibold sm:table-cell">Last 30d</th>
-                      <th className="hidden py-2 pr-3 text-right font-semibold sm:table-cell">Range</th>
-                      <th className="py-2 text-right font-semibold">Profit</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {advice.outcomes.map((o) => {
-                      const profit = o.net ?? o.uplift;
-                      const move = o.recentMedian != null && o.median > 0 ? Math.round((o.recentMedian / o.median - 1) * 100) : null;
-                      return (
-                        <tr key={o.label} className="border-b border-[var(--line)] last:border-0">
-                          <td className="py-2.5 pr-3 font-semibold">{o.label}</td>
-                          <td className="py-2.5 pr-3 text-right tabular-nums whitespace-nowrap">
-                            {o.count}
-                            {o.thin && <span className="ml-1.5 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase" style={{ background: "var(--thin-soft)", color: "var(--thin)" }}>few</span>}
-                          </td>
-                          <td className="py-2.5 pr-3 text-right tabular-nums">
-                            {money(o.median)}
-                            {move != null && Math.abs(move) >= 10 && (
-                              <span className="block text-[11px] sm:hidden" style={{ color: move > 0 ? "var(--good)" : "var(--bad)" }}>30d {move > 0 ? "▲" : "▼"}{Math.abs(move)}%</span>
-                            )}
-                          </td>
-                          <td className="hidden py-2.5 pr-3 text-right tabular-nums whitespace-nowrap sm:table-cell">
-                            {o.recentMedian == null ? <span className="text-[var(--muted)]">—</span> : (
-                              <>
-                                {money(o.recentMedian)}
-                                {move != null && move !== 0 && (
-                                  <span className="ml-1 text-xs" style={{ color: Math.abs(move) >= 10 ? (move > 0 ? "var(--good)" : "var(--bad)") : "var(--muted)" }}>
-                                    {move > 0 ? "▲" : "▼"}{Math.abs(move)}%
-                                  </span>
-                                )}
-                              </>
-                            )}
-                          </td>
-                          <td className="hidden py-2.5 pr-3 text-right tabular-nums text-[var(--muted)] whitespace-nowrap sm:table-cell">{o.low === o.high ? "—" : `${money(o.low)}–${money(o.high)}`}</td>
-                          <td className="py-2.5 text-right font-bold tabular-nums whitespace-nowrap" style={{ color: profit > 0 ? "var(--good)" : "var(--bad)" }}>
-                            {signed(profit)}{o.net === null ? <span className="font-normal text-[var(--muted)]"> †</span> : ""}
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-                <p className="mt-2 text-xs text-[var(--muted)]">
-                  Profit = median sold − fees − raw cost − grading cost. † = grading cost not entered. FEW = under 3 sales, so one odd sale can swing it.
-                  Last 30d compares the last 30 days with the full median. Sales over 3× or under ⅓ of the rest of their grade are left out (see Excluded).
-                </p>
+              <div className={card$}>
+                <h2 className="text-lg font-bold">Sold prices by grade</h2>
+                <p className="mt-0.5 text-sm text-[var(--muted)]">Tap a company to see what each grade sold for, and your profit after costs.</p>
+                <div className="mt-3 space-y-2">
+                  {gradeGroups.map((group, index) => (
+                    <details key={group.company} open={index === 0} className="group rounded-xl border border-[var(--line)]">
+                      <summary className="flex cursor-pointer list-none items-center gap-3 px-3 py-2.5 [&::-webkit-details-marker]:hidden">
+                        <span className="h-3 w-3 shrink-0 rounded-full" style={{ background: COMPANY_COLORS[group.company] ?? "var(--muted)" }} aria-hidden="true" />
+                        <span className="font-semibold">{group.company}</span>
+                        <span className="text-sm text-[var(--muted)]">{group.sales} sale{group.sales === 1 ? "" : "s"} · {group.rows.length} grade{group.rows.length === 1 ? "" : "s"}</span>
+                        <span className="ml-auto text-[var(--muted)] transition group-open:rotate-180" aria-hidden="true">▾</span>
+                      </summary>
+                      <ul className="border-t border-[var(--line)]">
+                        {group.rows.map((o) => {
+                          const profit = o.net ?? o.uplift;
+                          return (
+                            <li key={o.label} className="flex items-center gap-3 border-b border-[var(--line)] px-3 py-2.5 last:border-0">
+                              <span className="w-12 shrink-0">
+                                <span className="inline-block rounded-md px-2 py-0.5 text-sm font-bold"
+                                  style={{ background: profit > 0 ? toneSoft.good : toneSoft.bad, color: profit > 0 ? toneColor.good : toneColor.bad }}>
+                                  {o.label.replace(`${o.company} `, "")}
+                                </span>
+                              </span>
+                              <span className="min-w-0 flex-1">
+                                <span className="block font-semibold tabular-nums">{money(o.median)}</span>
+                                <span className="block text-xs text-[var(--muted)]">
+                                  {o.count} sale{o.count === 1 ? "" : "s"}{o.thin ? " · few" : ""}
+                                  {o.low !== o.high ? ` · ${money(o.low)}–${money(o.high)}` : ""}
+                                </span>
+                              </span>
+                              <span className="text-right">
+                                <span className="block font-bold tabular-nums" style={{ color: profit > 0 ? toneColor.good : toneColor.bad }}>{signed(profit)}</span>
+                                <span className="block text-xs text-[var(--muted)]">{o.net === null ? "before grading fee" : "profit"}</span>
+                              </span>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    </details>
+                  ))}
+                </div>
               </div>
             )}
 
-            {span && (
-              <p className="text-sm text-[var(--muted)]">
-                Sales used run from {span.from} to {span.to} ({span.days} day{span.days === 1 ? "" : "s"}).
-                {span.days < 30 ? " eBay returns only the newest 80 listings, so for a card this busy the medians cover a short window, not 90 days." : ""}
-              </p>
+            {keyWarning && (
+              <div className="rounded-2xl px-4 py-3 text-sm" style={{ background: toneSoft.thin, color: "var(--fg)" }}>
+                <span className="font-semibold" style={{ color: toneColor.thin }}>Good to know: </span>
+                {keyWarning}
+              </div>
             )}
 
-            {[["Same grade, different company", advice.sameGrade], ["Where a lower grade sells for more", advice.crossGrade], ["Lowest grade that makes money", advice.breakEven], ["Watch out", advice.warnings]]
-              .filter(([, lines]) => (lines as string[]).length)
-              .map(([title, lines]) => (
-                <div key={title as string}>
-                  <h3 className="text-sm font-semibold uppercase tracking-wide text-[var(--muted)]">{title as string}</h3>
-                  <ul className="mt-1.5 list-disc space-y-1 pl-5 text-sm">
-                    {(lines as string[]).map((line) => <li key={line}>{line}</li>)}
-                  </ul>
-                </div>
-              ))}
+            <details className={`${card$} group`}>
+              <summary className="flex cursor-pointer list-none items-center justify-between gap-3 [&::-webkit-details-marker]:hidden">
+                <span>
+                  <span className="block font-semibold">More details</span>
+                  <span className="block text-xs text-[var(--muted)]">How the numbers are worked out, comparisons and warnings</span>
+                </span>
+                <span className="text-[var(--muted)] transition group-open:rotate-180" aria-hidden="true">▾</span>
+              </summary>
+              <div className="mt-3 space-y-4 text-sm">
+                {advice.expected.length > 0 && (
+                  <div>
+                    <h3 className="text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">How the expected profit is worked out</h3>
+                    <ul className="mt-1.5 space-y-1.5">
+                      {advice.expected.map((e) => (
+                        <li key={e.company}>
+                          <span className="font-semibold">{e.company} {signed(e.expectedNet)}</span>
+                          <span className="block text-xs text-[var(--muted)]">{e.used.map((u) => `${u.oddsPct}% × ${u.label} ${signed(u.net)}`).join(" + ")}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {[["Same grade, different company", advice.sameGrade], ["Where a lower grade sells for more", advice.crossGrade], ["Lowest grade that makes money", advice.breakEven], ["Watch out", advice.warnings]]
+                  .filter(([, lines]) => (lines as string[]).length)
+                  .map(([title, lines]) => (
+                    <div key={title as string}>
+                      <h3 className="text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">{title as string}</h3>
+                      <ul className="mt-1.5 list-disc space-y-1 pl-5">
+                        {(lines as string[]).map((line) => <li key={line}>{line}</li>)}
+                      </ul>
+                    </div>
+                  ))}
+                {span && (
+                  <p className="text-[var(--muted)]">
+                    Sales used run from {span.from} to {span.to} ({span.days} day{span.days === 1 ? "" : "s"}).
+                    {span.days < 30 ? " eBay returns only the newest 80 listings, so for a card this busy the prices cover a short window, not 90 days." : ""}
+                  </p>
+                )}
+                <p className="text-xs text-[var(--muted)]">
+                  Profit = typical sold price − selling fees − ungraded value − grading cost. &ldquo;Few&rdquo; = under 3 sales, so one odd sale can swing it.
+                  Sales over 3× or under ⅓ of the rest of their grade are left out (see Excluded listings).
+                </p>
+              </div>
+            </details>
           </div>
 
-          <details className={card$}>
-            <summary className="cursor-pointer font-semibold">Sales used ({used.length})</summary>
-            <ListingList items={used} />
-          </details>
-          <details className={card$}>
-            <summary className="cursor-pointer font-semibold">Excluded listings ({excluded.length}), with reasons</summary>
-            <ListingList items={excluded} showReason />
-          </details>
+          {([["Sales used", `${used.length} eBay sales the prices are based on`, used, false], ["Excluded listings", `${excluded.length} left out, each with the reason`, excluded, true]] as const).map(([title, hint, items, showReason]) => (
+            <details key={title} className={`${card$} group`}>
+              <summary className="flex cursor-pointer list-none items-center justify-between gap-3 [&::-webkit-details-marker]:hidden">
+                <span>
+                  <span className="block font-semibold">{title} <span className="font-normal text-[var(--muted)]">({items.length})</span></span>
+                  <span className="block text-xs text-[var(--muted)]">{hint}</span>
+                </span>
+                <span className="text-[var(--muted)] transition group-open:rotate-180" aria-hidden="true">▾</span>
+              </summary>
+              <ListingList items={[...items]} showReason={showReason} />
+            </details>
+          ))}
           <p className="px-1 text-xs text-[var(--muted)]">
             eBay search: <a className="underline" target="_blank" rel="noreferrer"
               href={`https://www.ebay.com/sch/i.html?_nkw=${encodeURIComponent(sales.keyword)}&LH_Sold=1&LH_Complete=1`}>“{sales.keyword}”</a>
